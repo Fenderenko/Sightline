@@ -1,84 +1,87 @@
 # Sightline
 
-Власний приціл поверх ігор у режимі borderless / windowed fullscreen для Windows 10/11.
-Приціл малюється в окремому прозорому вікні: нічого не впроваджується в гру, жодних хуків, драйверів чи читання пам'яті.
+**English** · [Українська](README.uk.md)
 
-## Завантажити
+A custom crosshair overlay for games running in borderless / windowed fullscreen on Windows 10/11.
+The crosshair is drawn in its own transparent window: nothing is injected into the game. No hooks, no drivers, no memory reading.
 
-Готові файли лежать у [Releases](../../releases): розпакуйте zip і запустіть `sightline.exe`.
-Приціл з'явиться одразу, а іконка в треї відкриває налаштування.
+## Download
 
-> Exe не підписані цифровим підписом, тому Windows SmartScreen може показати попередження:
-> «Докладніше» → «Виконати в будь-якому разі».
+Get the latest build from [Releases](../../releases): unzip it and run `sightline.exe`.
+The crosshair appears immediately; the tray icon opens the settings.
 
-## Можливості
+> The executables are not code-signed, so Windows SmartScreen may show a warning:
+> "More info" → "Run anyway".
 
-- **Бібліотека: 59 пресетів.** Найпопулярніші йдуть першими: компактні статичні хрести з обводкою й без, різної товщини й довжини, крапки. Далі кола, снайперські, фігури, доступність, fun. Є пошук (Ctrl+F), категорії, обрані.
-- **Конструктор:**
-  - 13 форм: хрест, плюс, X, T, крапка, кільце, квадрат, ромб, трикутник, кути, шеврон, сегменти, лінія.
-  - Шари, обводка, поворот, зсув, окрема вертикальна довжина, «точка в центрі».
-  - Палітра кольору й точне введення значень, зміна будь-якого значення коліщатком миші.
-  - Скасування й повтор дій (Ctrl+Z / Ctrl+Y).
-  - Явне збереження: «Зберегти» / «Зберегти як новий» / «Скасувати зміни». Вбудовані пресети не змінюються: збереження створює вашу копію в «Мої».
-- **Піксельна точність.** Усі елементи прицілу мають спільний центр, тому приціл завжди симетричний.
-- **Імпорт кодів:** Sightline `SL1.…`, Valorant (`0;P;…`), CS2 (`CSGO-…` і `CS…`, з масштабуванням під ваш монітор). Також експорт та імпорт бібліотеки у JSON.
-- **Профілі ігор** за exe (свій приціл і зсув), фільтр процесів, список Competitive-safe.
-- **Прицілювання (ADS):** сховати приціл, показувати лише при прицілюванні або перемкнути на інший.
-- **Коли ховати приціл:** на робочому столі, коли видно курсор (меню, інвентар), лише в повноекранних іграх.
-- **Інше:** вибір монітора, центр монітора або вікна гри, «сон до запиту», виключення зі стріму/запису.
-- **Оформлення:** світла й темна теми (або як у системі), українська та англійська.
+## Features
 
-## Гарячі клавіші за замовчуванням
+- **Library of 59 presets.** The most used styles come first: compact static crosses with and without outline, in various thicknesses and lengths, and dots. Then circles, sniper, shapes, accessibility and fun. Search (Ctrl+F), categories and favourites.
+- **Editor:**
+  - 13 shapes: cross, plus, X, T, dot, ring, box, diamond, triangle, corners, chevron, segments, line.
+  - Layers, outline, rotation, offset, separate vertical length, "centre dot".
+  - Colour picker, precise value entry, mouse wheel over any value.
+  - Undo / redo (Ctrl+Z / Ctrl+Y).
+  - Explicit saving: "Save" / "Save as new" / "Discard changes". Built-in presets are never modified: saving creates your own copy under "Mine".
+- **Pixel-exact.** All elements share one centre, so the crosshair is always symmetric.
+- **Code import:** Sightline `SL1.…`, Valorant (`0;P;…`) and CS2 (`CSGO-…` and `CS…`, rescaled to your monitor). Library export and import as JSON.
+- **Game profiles** by exe (own crosshair and offset), process filter, Competitive-safe list.
+- **Aim down sights (ADS):** hide the crosshair, show it only while aiming, or switch to another one.
+- **When to hide the crosshair:** on the desktop, while the mouse cursor is visible (menus, inventory), or outside fullscreen games.
+- **Other:** monitor selection, monitor or game-window centre, sleep until requested, exclusion from streams and recordings.
+- **Look:** light and dark themes (or follow the system), English and Ukrainian.
 
-| Дія | Клавіші |
+## Default hotkeys
+
+| Action | Keys |
 |---|---|
-| Показати / сховати приціл | Ctrl+Shift+F9 |
-| Наступний / попередній приціл | Ctrl+Shift+F8 / F7 |
-| Налаштування | Ctrl+Shift+F11 |
-| Конкретний приціл | своя клавіша для кожного прицілу |
-| Зсув прицілу на 1 px | модифікатор + стрілки (за замовчуванням вимкнено) |
-| Прицілювання (ADS) | не призначено (ПКМ, Mouse 4/5 або клавіша) |
+| Show / hide crosshair | Ctrl+Shift+F9 |
+| Next / previous crosshair | Ctrl+Shift+F8 / F7 |
+| Settings | Ctrl+Shift+F11 |
+| Specific crosshair | per-crosshair hotkey |
+| Nudge crosshair by 1 px | modifier + arrow keys (off by default) |
+| Aim down sights (ADS) | unbound (RMB, Mouse 4/5 or a key) |
 
-## Ресурси (статичний приціл, Windows 11, 2560×1440)
+## Resources (static crosshair, Windows 11, 2560×1440)
 
-| Режим ядра | CPU | Пам'ять (private) |
+| Core mode | CPU | Memory (private) |
 |---|---|---|
-| Статичний приціл | 0 | ~2,5 MB |
-| + клавіша прицілювання (опитування 125 Гц) | ~0,2 % одного ядра | ~2,5 MB |
-| + «ховати, коли видно курсор» (10 Гц) | нижче точності виміру | ~2,5 MB |
+| Static crosshair | 0 | ~2.5 MB |
+| + ADS key bound (125 Hz polling) | ~0.2 % of one core | ~2.5 MB |
+| + hide while cursor is visible (10 Hz) | below measurement precision | ~2.5 MB |
 
-Перемальовування прицілу займає 0,04–2,6 мс і відбувається лише при зміні, а не щокадру. Ядро не завантажує жодної графічної бібліотеки.
-Вікно налаштувань окремий процес, який повністю завершується після закриття.
+Redrawing the crosshair takes 0.04–2.6 ms and happens only when it changes, never per frame. The core loads no graphics libraries at all.
+The settings window is a separate process that exits completely when closed.
 
-## Безпека й античіти
+## Safety and anti-cheat
 
-Sightline не впроваджує DLL, не перехоплює DirectX/OpenGL/Vulkan, не читає й не змінює пам'ять чи файли гри, не аналізує пікселі екрана, не надсилає ввід і не ставить драйверів.
-Проте жоден сторонній оверлей не має офіційної гарантії від розробників ігор, а деякі турнірні платформи забороняють сторонні приціли. Перевірте правила гри; для таких ігор є список Competitive-safe.
+Sightline does not inject DLLs, hook DirectX/OpenGL/Vulkan, read or modify game memory or files, analyse screen pixels, send input or install drivers.
+Still, no third-party overlay has an official guarantee from game developers, and some tournament platforms forbid third-party crosshairs. Check the game's rules; for such games there is the Competitive-safe list.
 
-## Збірка з вихідного коду
+## Building from source
 
-Потрібен Visual Studio 2022 (або Build Tools) з набором «Desktop development with C++» і Windows SDK 10.0.22621+.
+Requires Visual Studio 2022 (or Build Tools) with "Desktop development with C++" and Windows SDK 10.0.22621+.
 
 ```powershell
 .\build.cmd            # release → bin\sightline.exe, bin\sightline-settings.exe
 .\build.cmd debug
+$env:SL_TEST = "1"; .\build.cmd   # also builds and runs the self-test
 ```
 
-`CMakeLists.txt` не підтримується і застарів; використовуйте `build.cmd`.
+- `sightline.exe` — core (overlay, hotkeys, tray). Launching it again opens the settings; `sightline.exe --quit` stops the core.
+- `sightline-settings.exe` — settings.
+- Config: `%APPDATA%\Sightline\config.json` (+ `.bak`). Logs: `%LOCALAPPDATA%\Sightline\logs`.
 
-- `sightline.exe` — ядро (оверлей, хоткеї, трей). Повторний запуск відкриває налаштування; `sightline.exe --quit` зупиняє ядро.
-- `sightline-settings.exe` — налаштування.
-- Конфіг: `%APPDATA%\Sightline\config.json` (+ `.bak`). Логи: `%LOCALAPPDATA%\Sightline\logs`.
+Releases are built by GitHub Actions: every push to `main` whose version (in `res/app.rc`) has no release yet builds, self-tests and publishes `v<version>` with notes from `docs/releases/`.
 
-## Структура
+## Layout
 
 ```
-src/common    модель, JSON, CPU-растеризатор прицілу, коди Valorant/CS2, логотип, i18n, IPC
-src/core      sightline.exe: оверлей, хоткеї, профілі, трей
+src/common    model, JSON, CPU crosshair rasteriser, Valorant/CS2 codes, logo, i18n, IPC
+src/core      sightline.exe: overlay, hotkeys, profiles, tray
 src/settings  sightline-settings.exe: Direct2D UI
-tools/        генерація іконки під час збірки
-tests/        самотест рендеру, симетрії та конфігу
-docs/         архітектура, ризики, макети
+tools/        icon generation at build time
+tests/        self-test for rendering, symmetry and config
+docs/         architecture, risks, design mock-ups, release notes
 ```
 
-Детальніше: [docs/architecture.md](docs/architecture.md).
+More: [docs/architecture.md](docs/architecture.md).

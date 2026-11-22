@@ -11,6 +11,11 @@ on:
 permissions:
   contents: write
 
+# One release run at a time, so two quick pushes cannot both try to publish the same version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: windows-latest
