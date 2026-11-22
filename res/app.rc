@@ -1,0 +1,32 @@
+// Application icon (generated at build time by tools/mkicon.cpp into the object folder) and version info.
+#include <winver.h>
+
+1 ICON "app.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 0, 2, 0, 0
+PRODUCTVERSION 0, 2, 0, 0
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE 0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "Fenderenko"
+      VALUE "FileDescription", "Sightline crosshair overlay"
+      VALUE "FileVersion", "0.2.0"
+      VALUE "InternalName", "Sightline"
+      VALUE "LegalCopyright", "Fenderenko"
+      VALUE "ProductName", "Sightline"
+      VALUE "ProductVersion", "0.2.0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 1200
+  END
+END
