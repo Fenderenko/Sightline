@@ -1,0 +1,62 @@
+# Publishes a GitHub release whenever main carries a version that has no release yet.
+# The version comes from res/app.rc (ProductVersion); the tag is v<version> and is created if missing.
+# Build and self-test run on a Windows runner; notes come from docs/releases/v<version>.md.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: ver
+        shell: pwsh
+        run: |
+          $m = Select-String -Path res\app.rc -Pattern 'VALUE "ProductVersion", "([0-9.]+)"'
+          if (-not $m) { throw "ProductVersion not found in res/app.rc" }
+          $tag = "v" + $m.Matches[0].Groups[1].Value
+          gh release view $tag --repo "${{ github.repository }}" *> $null
+          $exists = $LASTEXITCODE -eq 0
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "skip=$($exists.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          if ($exists) { "Release $tag already exists, nothing to do." } else { "Will publish $tag." }
+          exit 0
+
+      - name: Build and self-test (MSVC)
+        if: steps.ver.outputs.skip != 'true'
+        shell: cmd
+        env:
+          SL_TEST: '1'
+        run: build.cmd release
+
+      - name: Package
+        if: steps.ver.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.ver.outputs.tag }}"
+          $name = "Sightline-$tag-win-x64"
+          New-Item -ItemType Directory $name | Out-Null
+          Copy-Item bin\sightline.exe, bin\sightline-settings.exe, README.md $name
+          Compress-Archive -Path "$name\*" -DestinationPath "$name.zip"
+          $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash
+          $notesPath = "docs\releases\$tag.md"
+          $notes = if (Test-Path $notesPath) { Get-Content -Raw -Encoding utf8 $notesPath } else { "Sightline $tag" }
+          "$notes`n`nSHA-256 ``$name.zip``: $hash" | Set-Content -Encoding utf8 release-notes.md
+
+      - name: Publish release
+        if: steps.ver.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.ver.outputs.tag }}"
+          gh release create $tag "Sightline-$tag-win-x64.zip" --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "Sightline $tag" --notes-file release-notes.md
