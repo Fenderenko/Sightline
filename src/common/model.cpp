@@ -496,6 +496,9 @@ json::Value ToJson(const Layer& l) {
   o.Set("outlineThickness", l.outlineThickness);
   o.Set("outlineColor", ColorToHex(l.outlineColor));
   o.Set("outlineOpacity", l.outlineOpacity);
+  // Written only when used, so share codes and fingerprints of sharp crosshairs stay unchanged.
+  if (l.blur > 0) o.Set("blur", l.blur);
+  if (l.outlineBlur > 0) o.Set("outlineBlur", l.outlineBlur);
   o.Set("offsetX", l.offsetX);
   o.Set("offsetY", l.offsetY);
   o.Set("hidden", l.hidden);
@@ -522,6 +525,8 @@ void FromJson(const json::Value& v, Layer& l) {
   l.outlineThickness = Clampf(v["outlineThickness"].Float(d.outlineThickness), 0, 16);
   l.outlineColor = ColorFromHex(v["outlineColor"].Str("#000000"));
   l.outlineOpacity = Clampf(v["outlineOpacity"].Float(d.outlineOpacity), 0, 1);
+  l.blur = Clampf(v["blur"].Float(0), 0, kMaxBlur);
+  l.outlineBlur = Clampf(v["outlineBlur"].Float(0), 0, kMaxBlur);
   l.offsetX = Clampf(v["offsetX"].Float(0), -400, 400);
   l.offsetY = Clampf(v["offsetY"].Float(0), -400, 400);
   l.hidden = v["hidden"].Bool(false);

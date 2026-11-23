@@ -1,7 +1,9 @@
 #include "common/i18n.h"
 
+#include "common/i18n_tables.h"
 #include "common/winutil.h"
 
+#include <cwctype>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -320,25 +322,137 @@ constexpr Entry kStrings[] = {
   {"dlg.cancel", L"Скасувати", L"Cancel"},
   {"lib.presetReadOnly", L"Пресет лише для читання: змініть його в Конструкторі, і збережеться ваша копія", L"Presets are read-only: change it in the editor and your copy is saved"},
   {"lib.draftPending", L"Незбережені зміни в Конструкторі", L"Unsaved changes in the editor"},
+  {"chrome.startCoreTip", L"Запустити sightline.exe з папки програми", L"Launch sightline.exe from the app folder"},
+  {"ed.fill", L"Заливка", L"Fill"},
+  {"lbl.blur", L"Розмиття", L"Blur"},
+  {"ed.lastRay", L"Має лишитися хоча б один промінь", L"At least one ray must stay on"},
+  {"ed.layerCopy", L"Копіювати шар (Ctrl+C)", L"Copy layer (Ctrl+C)"},
+  {"ed.layerPaste", L"Вставити шар (Ctrl+V)", L"Paste layer (Ctrl+V)"},
+  {"ed.stylePaste", L"Вставити лише стиль (Ctrl+Shift+V)", L"Paste style only (Ctrl+Shift+V)"},
+  {"toast.layerCopied", L"Шар скопійовано", L"Layer copied"},
+  {"toast.stylePasted", L"Стиль застосовано до шару", L"Style applied to the layer"},
+  {"toast.exeExists", L"Ця програма вже у списку", L"This program is already listed"},
+  {"dlg.exeFilter", L"Програми (*.exe)", L"Programs (*.exe)"},
+  {"dlg.pickExe", L"Оберіть exe-файл гри", L"Choose the game's exe file"},
+  {"btn.browseExe", L"Огляд…", L"Browse…"},
+  {"btn.running", L"З запущених", L"From running"},
+  {"prof.exeTyped", L"або назва.exe + Enter", L"or name.exe + Enter"},
+  {"run.search", L"Пошук програм", L"Search programs"},
+  {"run.background", L"Фонові процеси", L"Background processes"},
+  {"set.configFolder", L"Папка налаштувань", L"Settings folder"},
+  {"set.logsFolder", L"Папка журналів", L"Logs folder"},
+  {"btn.openShort", L"Відкрити", L"Open"},
+  // About and updates
+  {"set.about", L"Про програму", L"About"},
+  {"about.version", L"Версія %s", L"Version %s"},
+  {"about.check", L"Перевірити оновлення", L"Check for updates"},
+  {"about.checking", L"Перевіряю…", L"Checking…"},
+  {"about.upToDate", L"У вас остання версія", L"You have the latest version"},
+  {"about.available", L"Доступна версія %s", L"Version %s is available"},
+  {"about.update", L"Оновити до %s", L"Update to %s"},
+  {"about.download", L"Завантажити", L"Download"},
+  {"about.downloading", L"Завантажую…", L"Downloading…"},
+  {"about.checkFailed", L"Не вдалося зв'язатися з GitHub", L"Couldn't reach GitHub"},
+  {"about.failed", L"Не вдалося оновити. Завантажте нову версію зі сторінки релізів", L"The update failed. Download the new version from the releases page"},
+  {"about.saveFirst", L"Спершу збережіть або скасуйте зміни в Конструкторі", L"Save or discard the editor changes first"},
+  {"about.desc", L"Власний приціл поверх ігор у режимі вікна без рамки. Нічого не впроваджується в гру: жодних хуків, драйверів чи читання пам'яті.", L"Your own crosshair over games in borderless windowed mode. Nothing is injected into the game: no hooks, no drivers, no memory reading."},
+  {"about.github", L"Sightline на GitHub", L"Sightline on GitHub"},
+  {"about.githubSub", L"Вихідний код, релізи й повідомлення про помилки", L"Source code, releases and bug reports"},
+  {"about.authorSub", L"Автор · інші проєкти", L"Author · other projects"},
 };
 // clang-format on
 
-bool g_english = false;
+constexpr LanguageInfo kLanguages[] = {
+    {"en", L"English"},  {"uk", L"Українська"}, {"de", L"Deutsch"},
+    {"fr", L"Français"}, {"es", L"Español"},    {"pt", L"Português (Brasil)"},
+    {"pl", L"Polski"},   {"it", L"Italiano"},   {"tr", L"Türkçe"},
+};
 
-}  // namespace
+using Table = std::span<const Translation> (*)();
+struct Extra {
+  const char* code;
+  Table table;
+};
+constexpr Extra kExtra[] = {
+    {"de", &TranslationsDe}, {"fr", &TranslationsFr}, {"es", &TranslationsEs}, {"pt", &TranslationsPt},
+    {"pl", &TranslationsPl}, {"it", &TranslationsIt}, {"tr", &TranslationsTr},
+};
 
-void SetLanguage(std::string_view lang) { g_english = lang == "en"; }
+Table FindExtra(std::string_view code) {
+  for (const Extra& e : kExtra) {
+    if (code == e.code) return e.table;
+  }
+  return nullptr;
+}
 
-std::string_view Language() { return g_english ? "en" : "uk"; }
-
-const wchar_t* T(std::string_view key) {
+const std::unordered_map<std::string_view, const Entry*>& Index() {
   static const std::unordered_map<std::string_view, const Entry*> index = [] {
     std::unordered_map<std::string_view, const Entry*> m;
     for (const Entry& e : kStrings) m.emplace(e.key, &e);
     return m;
   }();
+  return index;
+}
+
+std::unordered_map<std::string_view, const wchar_t*> TableIndex(Table table) {
+  std::unordered_map<std::string_view, const wchar_t*> m;
+  if (table) {
+    for (const Translation& t : table()) m.emplace(t.key, t.text);
+  }
+  return m;
+}
+
+// printf conversions of a text in order ("%s%d"), so translations can be checked against English.
+std::wstring Specifiers(const wchar_t* s) {
+  std::wstring out;
+  for (; *s; ++s) {
+    if (*s != L'%') continue;
+    ++s;
+    if (!*s) break;
+    if (*s == L'%') continue;
+    while (*s && !iswalpha(*s)) ++s;  // flags, width, precision
+    if (*s == L'z' || *s == L'l' || *s == L'h') out += *s++;
+    if (*s) out += *s;
+    if (!*s) break;
+  }
+  return out;
+}
+
+std::mutex g_mutex;
+std::string g_code = "en";
+std::unordered_map<std::string_view, const wchar_t*> g_extra;  // current extra language only
+
+}  // namespace
+
+std::span<const LanguageInfo> Languages() { return kLanguages; }
+
+void SetLanguage(std::string_view lang) {
+  std::lock_guard lock(g_mutex);
+  bool known = false;
+  for (const LanguageInfo& l : kLanguages) known |= lang == l.code;
+  const std::string code = known ? std::string(lang) : "en";
+  if (code == g_code) return;
+  g_code = code;
+  g_extra = TableIndex(FindExtra(g_code));
+}
+
+std::string_view Language() {
+  std::lock_guard lock(g_mutex);
+  return g_code;
+}
+
+const wchar_t* T(std::string_view key) {
+  const auto& index = Index();
   const auto it = index.find(key);
-  if (it != index.end()) return g_english ? it->second->en : it->second->uk;
+  if (it != index.end()) {
+    std::lock_guard lock(g_mutex);
+    if (g_code == "uk") return it->second->uk;
+    if (!g_extra.empty()) {
+      const auto tr = g_extra.find(key);
+      if (tr != g_extra.end()) return tr->second;
+    }
+    return it->second->en;
+  }
   // Missing key: return the key itself (cached so the pointer stays valid).
   static std::mutex m;
   static std::unordered_map<std::string, std::wstring> missing;
@@ -346,6 +460,27 @@ const wchar_t* T(std::string_view key) {
   auto& w = missing[std::string(key)];
   if (w.empty()) w = Widen(key);
   return w.c_str();
+}
+
+int MissingTranslations(std::string_view lang, int* badFormat) {
+  int missing = 0, bad = 0;
+  const Table table = FindExtra(lang);
+  const auto tr = TableIndex(table);
+  for (const Entry& e : kStrings) {
+    const wchar_t* text = lang == "uk" ? e.uk : nullptr;
+    if (lang == "en") text = e.en;
+    if (table) {
+      const auto it = tr.find(e.key);
+      if (it != tr.end()) text = it->second;
+    }
+    if (!text) {
+      ++missing;
+      continue;
+    }
+    if (Specifiers(text) != Specifiers(e.en)) ++bad;
+  }
+  if (badFormat) *badFormat = bad;
+  return missing;
 }
 
 }  // namespace sl

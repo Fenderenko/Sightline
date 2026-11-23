@@ -129,6 +129,7 @@ CoreApp* CoreApp::self_ = nullptr;
 int CoreApp::Run(HINSTANCE hinst) {
   self_ = this;
   hinst_ = hinst;
+  RemoveUpdateLeftovers();
 
   const bool loaded = LoadConfig(cfg_);
   if (!loaded) SaveConfig(cfg_);

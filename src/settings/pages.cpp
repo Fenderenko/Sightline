@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdarg>
+#include <memory>
+#include <thread>
 
 namespace sl {
 
@@ -65,30 +67,6 @@ std::wstring Fmt(const wchar_t* fmt, ...) {
   return buf;
 }
 
-const Color kFillPalette[] = {
-    {1, 1, 1, 1},
-    {1.0f, 0.894f, 0.361f, 1},   // yellow
-    {1.0f, 0.851f, 0.180f, 1},   // sun
-    {1.0f, 1.0f, 0.0f, 1},       // pure yellow
-    {1.0f, 0.478f, 0.102f, 1},   // orange
-    {1.0f, 0.498f, 0.431f, 1},   // coral
-    {1.0f, 0.231f, 0.231f, 1},   // red
-    {1.0f, 0.169f, 0.839f, 1},   // magenta
-    {0.765f, 0.722f, 0.941f, 1}, // lavender
-    {0.184f, 0.420f, 1.0f, 1},   // blue
-    {0.247f, 0.878f, 1.0f, 1},   // cyan
-    {0.239f, 1.0f, 0.361f, 1},   // neon green
-    {0.5f, 0.5f, 0.5f, 1},
-    {0.0f, 0.0f, 0.0f, 1},
-};
-
-const Color kOutlinePalette[] = {
-    {0, 0, 0, 1}, {1, 1, 1, 1}, {0.12f, 0.12f, 0.14f, 1}, {0.10f, 0.10f, 0.30f, 1}, {0.35f, 0.05f, 0.05f, 1}};
-
-bool SameRgb(const Color& a, const Color& b) {
-  return std::fabs(a.r - b.r) < 0.01f && std::fabs(a.g - b.g) < 0.01f && std::fabs(a.b - b.b) < 0.01f;
-}
-
 bool IsUser(const Crosshair& c) { return FindBuiltin(c.id) == nullptr; }
 
 // Editable content only: identity, favourite, hotkey and category are managed outside the editor.
@@ -100,7 +78,8 @@ std::string EditFp(Crosshair c) {
   return CrosshairFingerprint(c);
 }
 
-// One numeric shape parameter shown in the inspector's size section.
+// One numeric shape parameter shown in the inspector's size section. Every length, size and
+// thickness starts at 1 px so no setting can make a layer disappear; gaps may be 0.
 struct Param {
   const char* id;
   const char* label;
@@ -115,7 +94,7 @@ std::vector<Param> ShapeParams(const Layer& L) {
     case Shape::Cross:
     case Shape::XCross:
     case Shape::TShape:
-      return {{"p.len", "lbl.length", &Layer::length, 0, 60, 1, 0, L" px"},
+      return {{"p.len", "lbl.length", &Layer::length, 1, 60, 1, 0, L" px"},
               {"p.thk", "lbl.thickness", &Layer::thickness, 1, 12, 1, 0, L" px"},
               {"p.gap", "lbl.gap", &Layer::gap, 0, 40, 1, 0, L" px"}};
     case Shape::Plus:
@@ -124,7 +103,7 @@ std::vector<Param> ShapeParams(const Layer& L) {
     case Shape::Dot: return {{"p.size", "lbl.size", &Layer::size, 1, 24, 1, 0, L" px"}};
     case Shape::Ring:
       return {{"p.radius", "lbl.radius", &Layer::size, 2, 60, 0.5f, 1, L" px"},
-              {"p.thk", "lbl.thickness", &Layer::thickness, 0.5f, 8, 0.5f, 1, L" px"}};
+              {"p.thk", "lbl.thickness", &Layer::thickness, 1, 8, 0.5f, 1, L" px"}};
     case Shape::Box:
     case Shape::Diamond:
     case Shape::Triangle: {
@@ -140,10 +119,10 @@ std::vector<Param> ShapeParams(const Layer& L) {
     case Shape::Chevron:
       return {{"p.gap", "lbl.gap", &Layer::gap, 0, 40, 1, 0, L" px"},
               {"p.len", "lbl.arm", &Layer::length, 1, 40, 1, 0, L" px"},
-              {"p.thk", "lbl.thickness", &Layer::thickness, 0.5f, 8, 0.5f, 1, L" px"}};
+              {"p.thk", "lbl.thickness", &Layer::thickness, 1, 8, 0.5f, 1, L" px"}};
     case Shape::Segments:
       return {{"p.radius", "lbl.radius", &Layer::size, 2, 60, 0.5f, 1, L" px"},
-              {"p.thk", "lbl.thickness", &Layer::thickness, 0.5f, 8, 0.5f, 1, L" px"},
+              {"p.thk", "lbl.thickness", &Layer::thickness, 1, 8, 0.5f, 1, L" px"},
               {"p.seggap", "lbl.gap", &Layer::segmentGap, 0, 80, 1, 0, L"°"}};
     case Shape::Line:
       return {{"p.len", "lbl.halfLength", &Layer::length, 1, 80, 1, 0, L" px"},
@@ -317,7 +296,7 @@ void SettingsApp::EditApply(const Crosshair& next) {
 
 void SettingsApp::CommitHistory(bool force) {
   if (!historyPending_) return;
-  if (!force && (in_.down || ui_.AnyFocus() || GetTickCount64() - lastWheel_ < 450)) return;
+  if (!force && (in_.down || TypingFocus() || GetTickCount64() - lastWheel_ < 450)) return;
   historyPending_ = false;
   if (EditFp(draft_) == EditFp(historyBefore_)) return;
   undo_.push_back(historyBefore_);
@@ -579,17 +558,20 @@ void SettingsApp::Chrome() {
   const auto& t = ui_.th();
   const float W = ui_.size().width, H = ui_.size().height;
   tip_.clear();
+  ui_.SetCaptionHeight(kHead);
   Shortcuts();
   ui_.Background();
   ui_.Fill(Rc(0, 0, kNav, H), t.panel);
 
-  // Brand.
+  // Brand: the only one, the window has no native caption.
   DrawLogo(dc_.Get(), Rc(24, 17, 46, 39), t.ink, t.acc);
   ui_.Text(L"SIGHTLINE", Rc(56, 18, kNav - 8, 38), Font::Wordmark, t.ink, Align::Left, 2.4f);
 
-  // Top row, right: core status and master switch.
+  // Top row, right (left of the caption buttons): master switch, and a core warning only when the
+  // core is not running.
   const float cy = 28;
-  const D2D1_RECT_F track = Rc(W - kPad - 36, cy - 10, W - kPad, cy + 10);
+  const float right = CaptionButtonRect(0).left - 20;
+  const D2D1_RECT_F track = Rc(right - 36, cy - 10, right, cy + 10);
   bool enabled = cfg_.settings.enabled;
   if (ui_.Switch(MakeId("master"), track, &enabled)) {
     cfg_.settings.enabled = enabled;
@@ -598,22 +580,20 @@ void SettingsApp::Chrome() {
   const float ow = std::ceil(ui_.Measure(T("chrome.overlay"), Font::Body));
   float x = track.left - 10 - ow;
   ui_.Text(T("chrome.overlay"), Rc(x, cy - 12, track.left - 8, cy + 12), Font::Body, t.ink);
-  x -= 32;
-  if (CoreOnline()) {
-    const float sw = std::ceil(ui_.Measure(T("chrome.coreOnline"), Font::Small));
-    ui_.Text(T("chrome.coreOnline"), Rc(x - sw, cy - 12, x + 2, cy + 12), Font::Small, t.ink3);
-    x -= sw + 12;
-    ui_.Circle({x + 4, cy}, 3.5f, t.acc);
-  } else {
+  x -= 24;
+  if (!CoreOnline()) {
     const float bw = std::ceil(ui_.Measure(T("btn.startCore"), Font::Small)) + 24;
-    if (ui_.Button(MakeId("core.start"), Rc(x - bw, cy - 14, x, cy + 14), T("btn.startCore"), Btn::Small)) LaunchCore();
+    const D2D1_RECT_F b = Rc(x - bw, cy - 14, x, cy + 14);
+    if (ui_.Button(MakeId("core.start"), b, T("btn.startCore"), Btn::Small)) LaunchCore();
+    Tip(b, T("chrome.startCoreTip"));
     x -= bw + 10;
     const float sw = std::ceil(ui_.Measure(T("chrome.coreOffline"), Font::Small));
-    ui_.Text(T("chrome.coreOffline"), Rc(x - sw, cy - 12, x + 2, cy + 12), Font::Small, t.ink3);
-    x -= sw + 12;
-    ui_.Circle({x + 4, cy}, 3.5f, t.ink3);
-    ui_.Circle({x + 4, cy}, 2.f, t.panel);
+    ui_.Text(T("chrome.coreOffline"), Rc(x - sw, cy - 12, x + 2, cy + 12), Font::Small, t.ink2);
+    x -= sw + 6;
+    ui_.Glyph(icon::Warning, Rc(x - 16, cy - 12, x, cy + 12), t.acc);
+    x -= 16 + 8;
   }
+  headerRight_ = x;  // pages keep their header controls left of this
 
   // The one page title.
   ui_.Text(T(kTitleKeys[static_cast<int>(page_)]), Rc(kNav + kPad - 1, 8, x - 24, 50), Font::Title, t.ink);
@@ -627,7 +607,6 @@ void SettingsApp::Chrome() {
     if (ui_.ClickArea(MakeId("nav", i), r) && !sel) {
       page_ = static_cast<Page>(i);
       pickerOpen_.clear();
-      pickTarget_ = PickTarget::None;
       confirmReset_ = false;
       ui_.ClearFocus();
     }
@@ -643,7 +622,7 @@ void SettingsApp::Chrome() {
     }
     y += 40;
   }
-  ui_.Text(L"v0.2", Rc(24, H - 36, kNav - 16, H - 16), Font::Mono, t.ink3);
+  ui_.Text(Widen("v" + appVersion_), Rc(24, H - 36, kNav - 16, H - 16), Font::Mono, t.ink3);
 
   const D2D1_RECT_F area = Rc(kNav, kHead, W, H);
   switch (page_) {
@@ -678,7 +657,52 @@ void SettingsApp::Chrome() {
     ui_.Circle({r.left + 20, (r.top + r.bottom) / 2}, 3.5f, t.acc);
     ui_.Text(toast_, Rc(r.left + 34, r.top, r.right - 14, r.bottom), Font::Small, t.bg);
   }
+  CaptionButtons();
 }
+
+// ───────────────────────────── window caption ─────────────────────────────
+
+namespace {
+constexpr float kCapBtnW = 46, kCapBtnH = 36;
+constexpr LRESULT kCapCodes[] = {HTMINBUTTON, HTMAXBUTTON, HTCLOSE};
+}  // namespace
+
+D2D1_RECT_F SettingsApp::CaptionButtonRect(int index) const {
+  const float W = ui_.size().width;
+  return Rc(W - (3 - index) * kCapBtnW, 0, W - (2 - index) * kCapBtnW, kCapBtnH);
+}
+
+LRESULT SettingsApp::CaptionHit(float x, float y) const {
+  for (int i = 0; i < 3; ++i) {
+    if (Inside(CaptionButtonRect(i), {x, y})) return kCapCodes[i];
+  }
+  // The header strip drags the window, except over its controls or while a popover waits for a click.
+  if (y < kHead && popup_ == Popup::None && !ui_.OverControl({x, y})) return HTCAPTION;
+  return HTCLIENT;
+}
+
+void SettingsApp::CaptionButtons() {
+  const auto& t = ui_.th();
+  const bool active = GetForegroundWindow() == hwnd_;
+  const wchar_t glyphs[] = {icon::Minimize, IsZoomed(hwnd_) ? icon::Restore : icon::Maximize, icon::ChromeClose};
+  for (int i = 0; i < 3; ++i) {
+    const D2D1_RECT_F r = CaptionButtonRect(i);
+    const bool hover = capHover_ == kCapCodes[i];
+    const bool pressed = hover && capPressed_ == kCapCodes[i];
+    D2D1_COLOR_F ink = active ? t.ink2 : t.ink3;
+    if (i == 2 && hover) {
+      // Close keeps the system's red so it reads the same as every other window.
+      ui_.Fill(r, pressed ? D2D1::ColorF(0x94 / 255.f, 0x1F / 255.f, 0x14 / 255.f) : D2D1::ColorF(0xC4 / 255.f, 0x2B / 255.f, 0x1C / 255.f));
+      ink = D2D1::ColorF(1, 1, 1);
+    } else if (hover) {
+      ui_.Fill(r, pressed ? t.field : t.sel);
+      ink = t.ink;
+    }
+    ui_.Glyph(glyphs[i], r, ink);
+  }
+}
+
+bool SettingsApp::TypingFocus() const { return ui_.AnyFocus() && !ui_.IsFocused(MakeId("ed.layerList")); }
 
 void SettingsApp::Shortcuts() {
   // The draft follows the active crosshair; switching away from unsaved changes asks first.
@@ -704,10 +728,13 @@ void SettingsApp::Shortcuts() {
       if (DraftDirty()) SaveDraft(true);
       continue;
     }
-    if (page_ != Page::Editor || ui_.AnyFocus()) continue;
+    // Editor shortcuts never compete with a text field; the layers list focus is not typing.
+    if (page_ != Page::Editor || TypingFocus()) continue;
     if (k == 'Z') StepHistory(in_.shift);
     else if (k == 'Y') StepHistory(true);
     else if (k == 'D') dupLayerRequest_ = true;
+    else if (k == 'C') clipRequest_ = 1;
+    else if (k == 'V') clipRequest_ = in_.shift ? 3 : 2;
   }
 }
 
@@ -728,6 +755,8 @@ void SettingsApp::Overlays() {
     case Popup::Color: ColorPopover(); break;
     case Popup::Picker: PickerPopover(); break;
     case Popup::Unsaved: UnsavedDialog(); break;
+    case Popup::Running: RunningPopover(); break;
+    case Popup::Language: LanguagePopover(); break;
     default: break;
   }
   ui_.EndOverlay();
@@ -796,7 +825,7 @@ void SettingsApp::CardMenu() {
   if (done && popup_ == Popup::CardMenu) ClosePopup();
 }
 
-void SettingsApp::ColorChip(D2D1_RECT_F r, const Color& c, int which) {
+void SettingsApp::ColorChip(D2D1_RECT_F r, const Color& c, int which, D2D1_RECT_F anchor) {
   const auto& t = ui_.th();
   const bool open = popup_ == Popup::Color && popupColor_ == which;
   const bool hover = ui_.Hover(Rc(r.left - 2, r.top - 2, r.right + 2, r.bottom + 2));
@@ -807,8 +836,7 @@ void SettingsApp::ColorChip(D2D1_RECT_F r, const Color& c, int which) {
   if (ui_.ClickArea(MakeId("chip.color", which), Rc(r.left - 2, r.top - 2, r.right + 2, r.bottom + 2))) {
     popup_ = Popup::Color;
     popupColor_ = which;
-    // The chip is followed by a 100-DIP hex field; the popover lines up with the field's right edge.
-    popupAnchor_ = Rc(r.left, r.top, r.left + 100, r.bottom);
+    popupAnchor_ = anchor;
     RgbToHsv(c, hsv_);
     ui_.ClearFocus();
   }
@@ -1019,7 +1047,8 @@ void SettingsApp::PageLibrary(D2D1_RECT_F full) {
   {
     const ui::Id sid = MakeId("lib.search");
     const float titleR = kNav + kPad + std::ceil(ui_.Measure(T("title.library"), Font::Title));
-    const D2D1_RECT_F sf = Rc(std::max(titleR + 28, area.right - 300), 11, area.right, 45);
+    const float sr = std::min(area.right, headerRight_ - 16);
+    const D2D1_RECT_F sf = Rc(std::max(titleR + 28, sr - 300), 11, sr, 45);
     const bool hasText = !search_.empty();
     if (ui_.TextField(sid, sf, &search_, T("lib.search"), 40, nullptr, false, icon::Search, hasText ? 22.f : 44.f)) {
       libScroll_ = 0;
@@ -1374,12 +1403,53 @@ void SettingsApp::PageEditor(D2D1_RECT_F full) {
     editLayer_ = std::clamp(editLayer_, 0, static_cast<int>(cur.layers.size()) - 1);
     changed = true;
   };
+  // Layer clipboard (in-process, survives switching crosshairs): a whole layer, or just its style.
+  const auto copyLayer = [&]() {
+    if (cur.layers.empty()) return;
+    layerClip_ = cur.layers[editLayer_];
+    hasLayerClip_ = true;
+    Toast(T("toast.layerCopied"));
+  };
+  const auto pasteLayer = [&]() {
+    if (!hasLayerClip_) return;
+    if (static_cast<int>(cur.layers.size()) >= kMaxLayers) {
+      Toast(T("toast.layerLimit"));
+      return;
+    }
+    const int at = cur.layers.empty() ? 0 : editLayer_ + 1;
+    cur.layers.insert(cur.layers.begin() + at, layerClip_);
+    cur.layers[at].hidden = false;
+    editLayer_ = at;
+    changed = true;
+  };
+  const auto pasteStyle = [&]() {
+    if (!hasLayerClip_ || cur.layers.empty()) return;
+    Layer& d = cur.layers[editLayer_];
+    const Layer& s = layerClip_;
+    d.fill = s.fill;
+    d.opacity = s.opacity;
+    d.blur = s.blur;
+    d.outline = s.outline;
+    d.outlineColor = s.outlineColor;
+    d.outlineOpacity = s.outlineOpacity;
+    d.outlineThickness = s.outlineThickness;
+    d.outlineBlur = s.outlineBlur;
+    changed = true;
+    Toast(T("toast.stylePasted"));
+  };
   if (dupLayerRequest_) {
     dupLayerRequest_ = false;
     duplicateLayer();
   }
+  if (clipRequest_) {
+    const int r = clipRequest_;
+    clipRequest_ = 0;
+    if (r == 1) copyLayer();
+    else if (r == 2) pasteLayer();
+    else pasteStyle();
+  }
   // Delete removes the selected layer while no field has the keyboard.
-  if (popup_ == Popup::None && capture_ == Capture::None && !ui_.AnyFocus() && in_.Key(VK_DELETE)) deleteLayer(editLayer_);
+  if (popup_ == Popup::None && capture_ == Capture::None && !TypingFocus() && in_.Key(VK_DELETE)) deleteLayer(editLayer_);
 
   // Columns: layers | fixed canvas centred in the free space | inspector.
   constexpr float lw = 188, gap = 28;
@@ -1403,44 +1473,27 @@ void SettingsApp::PageEditor(D2D1_RECT_F full) {
     }
     y += 34 + 24;
 
-    // Heading with icon-only layer actions.
-    ui_.Label(T("ed.layers"), Rc(lx0, y, lx1, y + 24), t.ink3);
+    // Heading with the add action; the rest of the layer actions sit in a toolbar under the list.
     const bool canDelete = cur.layers.size() > 1;
-    {
-      float bx = lx1;
-      const auto iconBtn = [&](const char* id, wchar_t g, bool enabled, const wchar_t* tip) {
-        bx -= 26;
-        const D2D1_RECT_F r = Rc(bx, y, bx + 24, y + 24);
-        Tip(r, tip);
-        return ui_.Button(MakeId(id), r, {}, Btn::Ghost, enabled, g);
-      };
-      if (iconBtn("ed.down", icon::Down, editLayer_ + 1 < static_cast<int>(cur.layers.size()), T("ed.layerDown"))) {
-        std::swap(cur.layers[editLayer_], cur.layers[editLayer_ + 1]);
-        ++editLayer_;
-        changed = true;
-      }
-      if (iconBtn("ed.up", icon::Up, editLayer_ > 0, T("ed.layerUp"))) {
-        std::swap(cur.layers[editLayer_], cur.layers[editLayer_ - 1]);
-        --editLayer_;
-        changed = true;
-      }
-      if (iconBtn("ed.remove", icon::Delete, canDelete, canDelete ? T("ed.layerDelete") : T("ed.lastLayer"))) {
-        deleteLayer(editLayer_);
-      }
-      if (iconBtn("ed.dupLayer", icon::Copy, static_cast<int>(cur.layers.size()) < kMaxLayers, T("ed.layerDup"))) {
-        duplicateLayer();
-      }
-      if (iconBtn("ed.add", icon::Add, static_cast<int>(cur.layers.size()) < kMaxLayers, T("ed.layerAdd"))) {
-        Layer l;
-        l.shape = Shape::Dot;
-        l.size = even ? 2.f : 3.f;  // symmetric on the shared centre
-        cur.layers.push_back(l);
-        editLayer_ = static_cast<int>(cur.layers.size()) - 1;
-        changed = true;
-      }
+    const bool roomForLayer = static_cast<int>(cur.layers.size()) < kMaxLayers;
+    const auto iconBtn = [&](const char* id, float bx, float by, wchar_t g, bool enabled, const wchar_t* tip) {
+      const D2D1_RECT_F r = Rc(bx, by, bx + 26, by + 26);
+      Tip(r, tip);
+      return ui_.Button(MakeId(id), r, {}, Btn::Ghost, enabled, g);
+    };
+    ui_.Label(T("ed.layers"), Rc(lx0, y, lx1, y + 26), t.ink3);
+    if (iconBtn("ed.add", lx1 - 26, y, icon::Add, roomForLayer, T("ed.layerAdd"))) {
+      Layer l;
+      l.shape = Shape::Dot;
+      l.size = even ? 2.f : 3.f;  // symmetric on the shared centre
+      cur.layers.push_back(l);
+      editLayer_ = static_cast<int>(cur.layers.size()) - 1;
+      changed = true;
     }
-    y += 24 + 6;
+    y += 26 + 6;
 
+    // Rows: a press anywhere on the list gives it the keyboard (Ctrl+C / Ctrl+V, Delete).
+    const ui::Id listFocus = MakeId("ed.layerList");
     int deleteRow = -1;
     for (size_t i = 0; i < cur.layers.size(); ++i) {
       Layer& L = cur.layers[i];
@@ -1451,17 +1504,23 @@ void SettingsApp::PageEditor(D2D1_RECT_F full) {
       const D2D1_RECT_F bin = Rc(lx1 - 28, y + 6, lx1 - 4, y + 30);
       const bool hover = ui_.Hover(row);
       const bool icons = hover || sel;
+      if (hover && in_.pressed) ui_.SetFocus(listFocus);
       // The row is evaluated first: a later ClickArea takes over the press, so the icons win.
       const bool rowClick = ui_.ClickArea(MakeId("ed.layer", idx), row);
       const bool eyeClick = (icons || L.hidden) && ui_.ClickArea(MakeId("ed.eye", idx), eye);
       const bool binClick = icons && canDelete && ui_.ClickArea(MakeId("ed.del", idx), bin);
       if (sel) ui_.FillRound(row, ui::kRadiusCtl, t.field);
       else if (hover) ui_.FillRound(row, ui::kRadiusCtl, t.sel);
-      const D2D1_POINT_2F dot{lx0 + 17, y + 18};
-      ui_.Circle(dot, 5.5f, t.dark ? D2D1::ColorF(1, 1, 1, 0.16f) : D2D1::ColorF(0, 0, 0, 0.16f));
-      ui_.Circle(dot, 4.5f, L.hidden ? t.track : ToD2D(L.fill));
-      ui_.Text(T(Key("shape.", ShapeKey(L.shape))), Rc(lx0 + 32, y, eye.left - 4, y + 36), sel ? Font::BodyBold : Font::Body,
-               L.hidden ? WithAlpha(t.ink3, 0.75f) : (sel ? t.ink : t.ink2));
+      // Shape icon on a small preview tile, the layer's fill colour as a badge on its corner.
+      const D2D1_RECT_F tile = Rc(lx0 + 6, y + 6, lx0 + 30, y + 30);
+      ui_.FillRound(tile, 5, t.tile);
+      DrawBitmap(ShapeIcon(L.shape), Rc(tile.left + 2, tile.top + 2, tile.right - 2, tile.bottom - 2), 1, -1, false, 1.f, 0);
+      if (L.hidden) ui_.FillRound(tile, 5, WithAlpha(t.bg, 0.55f));
+      const D2D1_POINT_2F badge{tile.right - 1, tile.bottom - 1};
+      ui_.Circle(badge, 5, t.bg);
+      ui_.Circle(badge, 3.5f, L.hidden ? t.track : ToD2D(L.fill));
+      ui_.Text(T(Key("shape.", ShapeKey(L.shape))), Rc(tile.right + 10, y, eye.left - 4, y + 36),
+               sel ? Font::BodyBold : Font::Body, L.hidden ? WithAlpha(t.ink3, 0.75f) : (sel ? t.ink : t.ink2));
       if (icons || L.hidden) {
         const bool eh = ui_.Hover(eye);
         if (eh) ui_.FillRound(eye, ui::kRadiusCtl - 2, t.sel);
@@ -1486,6 +1545,25 @@ void SettingsApp::PageEditor(D2D1_RECT_F full) {
       y += 38;
     }
     if (deleteRow >= 0) deleteLayer(deleteRow);
+
+    // Toolbar: duplicate, copy, paste, paste style | move up, move down.
+    y += 4;
+    const int n = static_cast<int>(cur.layers.size());
+    if (iconBtn("ed.dupLayer", lx0, y, icon::Duplicate, roomForLayer, T("ed.layerDup"))) duplicateLayer();
+    if (iconBtn("ed.copyLayer", lx0 + 28, y, icon::Copy, n > 0, T("ed.layerCopy"))) copyLayer();
+    if (iconBtn("ed.pasteLayer", lx0 + 56, y, icon::Paste, hasLayerClip_ && roomForLayer, T("ed.layerPaste"))) pasteLayer();
+    if (iconBtn("ed.pasteStyle", lx0 + 84, y, icon::Brush, hasLayerClip_ && n > 0, T("ed.stylePaste"))) pasteStyle();
+    if (iconBtn("ed.down", lx1 - 26, y, icon::Down, editLayer_ + 1 < n, T("ed.layerDown"))) {
+      std::swap(cur.layers[editLayer_], cur.layers[editLayer_ + 1]);
+      ++editLayer_;
+      changed = true;
+    }
+    if (iconBtn("ed.up", lx1 - 54, y, icon::Up, editLayer_ > 0, T("ed.layerUp"))) {
+      std::swap(cur.layers[editLayer_], cur.layers[editLayer_ - 1]);
+      --editLayer_;
+      changed = true;
+    }
+    y += 26;
     contentH = y + off - area.top + 8;
     ui_.EndScroll(view, off, contentH);
   }
@@ -1495,7 +1573,7 @@ void SettingsApp::PageEditor(D2D1_RECT_F full) {
     const D2D1_RECT_F canvas = Rc(cx0, area.top, cx0 + S, area.top + S);
     // The canvas shows the draft (hidden layers excluded), drawn by the overlay's rasteriser.
     const Preview* dp = DraftPreview();
-    DrawBitmap(dp, canvas, kZooms[zoom_], backdrop_, backdrop_ == 0, 0.86f, ui::kRadiusCard);
+    DrawBitmap(dp, canvas, kZooms[zoom_], backdrop_, backdrop_ == 0, 0.86f, ui::kRadiusCard, true);
     const float y2 = canvas.bottom + 12;
     const D2D1_RECT_F inset = Rc(cx0, y2, cx0 + 64, y2 + 64);
     DrawBitmap(dp, inset, 1, backdrop_ == 2 ? 2 : 1, false);
@@ -1537,6 +1615,8 @@ void SettingsApp::PageEditor(D2D1_RECT_F full) {
           dot.outlineThickness = base.outlineThickness;
           dot.outlineColor = base.outlineColor;
           dot.outlineOpacity = base.outlineOpacity;
+          dot.blur = base.blur;
+          dot.outlineBlur = base.outlineBlur;
           cur.layers.push_back(dot);
           changed = true;
         }
@@ -1586,66 +1666,111 @@ float SettingsApp::ShapePicker(Layer& L, float x0, float x1, float y, bool& chan
 float SettingsApp::LayerProps(Layer& L, float x0, float x1, float y, bool& changed, bool hasDot, int* dotRequest,
                               bool evenCenter, float scale) {
   const auto& t = ui_.th();
-  const float labelW = std::clamp((x1 - x0) * 0.34f, 96.f, 124.f);
-  constexpr float rowH = 28, stride = 30;
+  // Two columns shared by every group: labels, then fields of one width. Fill and outline rows use
+  // the same order, so colour, opacity and blur line up between the two groups.
+  const float labelW = std::clamp((x1 - x0) * 0.36f, 104.f, 128.f);
+  const float fx = x0 + labelW;
+  constexpr float rowH = 28, stride = 32, headH = 24, groupGap = 18, switchW = 36;
 
-  const auto slider = [&](const char* id, const wchar_t* label, float* v, float mn, float mx, float step, int dec,
-                          const wchar_t* unit, bool centered = false, const std::wstring& note = {}) {
-    if (ui_.Slider(MakeId(id), Rc(x0, y, x1, y + rowH), label, v, mn, mx, step, dec, unit, centered, labelW, note)) {
+  const auto field = [&](const char* id, const wchar_t* label, float* v, float mn, float mx, float step, int dec,
+                         const wchar_t* unit, bool centered = false, const std::wstring& note = {}) {
+    if (ui_.ValueField(MakeId(id), Rc(x0, y, x1, y + rowH), label, v, mn, mx, step, dec, unit, centered, labelW, note)) {
       changed = true;
     }
     y += stride;
   };
+  const auto percent = [&](const char* id, const wchar_t* label, float* v01) {
+    float p = *v01 * 100;
+    if (ui_.ValueField(MakeId(id), Rc(x0, y, x1, y + rowH), label, &p, 5, 100, 5, 0, L"%", false, labelW)) {
+      *v01 = p / 100.f;
+      changed = true;
+    }
+    y += stride;
+  };
+  const auto rowLabel = [&](const wchar_t* text) { ui_.Text(text, Rc(x0, y, fx - 8, y + rowH), Font::Small, t.ink2); };
+  // Label left, switch on the right edge of the field column.
+  const auto switchRow = [&](const char* id, const wchar_t* text, bool* v) {
+    const float mid = std::round(y + rowH / 2);
+    ui_.Text(text, Rc(x0, y, x1 - switchW - 12, y + rowH), Font::Small, t.ink2);
+    const bool clicked = ui_.Switch(MakeId(id), Rc(x1 - switchW, mid - 10, x1, mid + 10), v);
+    y += stride;
+    return clicked;
+  };
+  // Colour as one field: chip (opens the picker) and an editable hex value.
+  const auto colorRow = [&](const char* id, const wchar_t* text, Color& c, std::wstring& edit, int which) {
+    rowLabel(text);
+    const D2D1_RECT_F f = Rc(fx, y, x1, y + rowH);
+    const ui::Id hid = MakeId(id);
+    if (!ui_.IsFocused(hid)) edit = Widen(ColorToHex(c));
+    if (ui_.TextField(hid, f, &edit, L"#RRGGBB", 9, nullptr, true, 0, 0, 22)) {
+      bool ok = false;
+      const Color n = ColorFromHex(Narrow(edit), &ok);
+      if (ok) {
+        const float a = c.a;
+        c = n;
+        c.a = a;
+        changed = true;
+      }
+    }
+    ColorChip(Rc(f.left + 6, f.top + 5, f.left + 24, f.bottom - 5), c, which, f);
+    y += stride;
+  };
   // Pixel-snapped sizes of the other parity than the shared centre are drawn 1 px larger
   // (SymmetricPixels); the inspector shows the size actually drawn.
-  const auto effectiveNote = [&](float* field) -> std::wstring {
+  const auto effectiveNote = [&](float* f) -> std::wstring {
     const bool line = L.shape == Shape::Cross || L.shape == Shape::Plus || L.shape == Shape::XCross ||
                       L.shape == Shape::TShape || L.shape == Shape::Line;
     const bool squareDot = L.shape == Shape::Dot && !(L.round && std::lround(L.size * scale) >= 3);
-    if (!((line && field == &L.thickness) || (squareDot && field == &L.size))) return {};
-    const int px = std::max(1, static_cast<int>(std::lround(*field * scale)));
+    if (!((line && f == &L.thickness) || (squareDot && f == &L.size))) return {};
+    const int px = std::max(1, static_cast<int>(std::lround(*f * scale)));
     const int eff = SymmetricPixels(px, evenCenter);
     return eff != px ? Fmt(L"→ %d", eff) : std::wstring();
   };
-  const auto switchRow = [&](const char* id, const wchar_t* label, bool* v) {
-    const float mid = std::round(y + rowH / 2);
-    ui_.Text(label, Rc(x0, y, x1 - 48, y + rowH), Font::Small, t.ink2);
-    if (ui_.Switch(MakeId(id), Rc(x1 - 32, mid - 9, x1, mid + 9), v)) changed = true;
-    y += stride;
-  };
-  // Collapsible section heading; `reserve` keeps room on the right for an inline control.
-  const auto header = [&](int idx, const wchar_t* title, const std::wstring& summary, float reserve, bool collapsible = true) {
-    const D2D1_RECT_F hit = Rc(x0, y, x1 - reserve, y + 28);
+  // Group heading: mono caps title with a disclosure chevron right after it. Collapsed groups show a
+  // short summary on the right; `reserve` keeps room there for an inline control.
+  const auto header = [&](int idx, const wchar_t* title, const std::wstring& summary, float reserve,
+                          bool collapsible = true) {
+    const float tw = std::ceil(ui_.MeasureLabel(title));
+    const D2D1_RECT_F hit = Rc(x0, y, x1 - reserve, y + headH);
     const bool hover = collapsible && ui_.Hover(hit);
     if (collapsible && ui_.ClickArea(MakeId("ed.sec", idx), hit)) edOpen_[idx] = !edOpen_[idx];
-    const bool open = edOpen_[idx];
-    ui_.Label(title, Rc(x0, y, x1, y + 28), hover ? t.ink : t.ink2);
-    const float chevR = x1 - reserve;
+    const bool open = edOpen_[idx] && collapsible;
+    ui_.Label(title, Rc(x0, y, x0 + tw + 2, y + headH), hover ? t.ink : t.ink2);
     if (collapsible) {
-      ui_.Glyph(open ? icon::ChevronDown : icon::Chevron, Rc(chevR - 16, y, chevR, y + 28), hover ? t.ink : t.ink3);
+      ui_.Glyph(edOpen_[idx] ? icon::ChevronDown : icon::Chevron, Rc(x0 + tw + 4, y, x0 + tw + 20, y + headH),
+                hover ? t.ink : t.ink3);
     }
-    if (!open && !summary.empty()) ui_.Text(summary, Rc(x0 + 90, y, chevR - 24, y + 28), Font::Mono, t.ink3, Align::Right);
-    y += 32;
+    if (!edOpen_[idx] && !summary.empty()) {
+      ui_.Text(summary, Rc(x0 + tw + 28, y, x1 - reserve, y + headH), Font::Mono, t.ink3, Align::Right);
+    }
+    y += headH + 6;
     return open;
   };
 
-  // Shape: compact icon grid, the chosen (or hovered) name shown once.
+  // Shape: compact icon grid; the chosen (or hovered) name shown once on the heading row.
   {
     int hovered = -1;
-    const float gridTop = y + 26;
+    const float gridTop = y + headH + 6;
     const float end = ShapePicker(L, x0 + 2, x1, gridTop, changed, &hovered);
     const Shape shown = hovered >= 0 ? static_cast<Shape>(hovered) : L.shape;
-    ui_.Label(T("ed.shape"), Rc(x0, y, x1, y + 18), t.ink2);
-    ui_.Text(T(Key("shape.", ShapeKey(shown))), Rc(x0, y, x1, y + 18), Font::Small, hovered >= 0 ? t.ink3 : t.ink,
+    ui_.Label(T("ed.shape"), Rc(x0, y, x1, y + headH), t.ink2);
+    ui_.Text(T(Key("shape.", ShapeKey(shown))), Rc(x0, y, x1, y + headH), Font::Small, hovered >= 0 ? t.ink3 : t.ink,
              Align::Right);
-    y = end + 22;
+    y = end + groupGap + 4;
   }
 
-  // Size: geometry of the current shape.
+  // Size: geometry of the current shape, then its options.
   {
     const std::vector<Param> params = ShapeParams(L);
+    const bool vertical = HasVerticalLength(L.shape);
+    const bool splitV = vertical && L.lengthV > 0;
+    // Arcs must keep some length: the gap between segments stays below the arc pitch.
+    const float segGapMax = std::min(80.f, std::floor(360.f / std::max(2, L.segments)) - 2);
+    if (L.shape == Shape::Segments && L.segmentGap > segGapMax) {
+      L.segmentGap = segGapMax;
+      changed = true;
+    }
     std::wstring summary;
-    const bool splitV = HasVerticalLength(L.shape) && L.lengthV > 0;
     for (const Param& p : params) {
       summary += (summary.empty() ? L"" : L" · ") + Num(L.*(p.field), p.dec);
       if (splitV && p.field == &Layer::length) summary += L"/" + Num(L.lengthV, 0);
@@ -1653,160 +1778,109 @@ float SettingsApp::LayerProps(Layer& L, float x0, float x1, float y, bool& chang
     if (L.shape == Shape::Segments) summary += Fmt(L" · ×%d", L.segments);
     if (header(0, T("lbl.size"), summary, 0)) {
       for (const Param& p : params) {
-        const bool isLength = HasVerticalLength(L.shape) && p.field == &Layer::length;
-        float* field = &(L.*(p.field));
-        slider(p.id, isLength && splitV ? T("lbl.lengthH") : T(p.label), field, p.mn, p.mx, p.step, p.dec, p.unit, false,
-               effectiveNote(field));
-        if (isLength) {
-          // Separate vertical rays: lengthV == 0 means "same as length".
-          bool split = splitV;
-          if (ui_.Switch(MakeId("p.splitv"), Rc(x1 - 32, std::round(y + rowH / 2) - 9, x1, std::round(y + rowH / 2) + 9), &split)) {
-            L.lengthV = split ? std::max(1.f, L.length) : 0.f;
-            changed = true;
-          }
-          ui_.Text(T("lbl.splitV"), Rc(x0, y, x1 - 48, y + rowH), Font::Small, t.ink2);
-          y += stride;
-          if (L.lengthV > 0) slider("p.lenv", T("lbl.lengthV"), &L.lengthV, 1, 60, 1, 0, L" px");
-        }
+        const bool isLength = vertical && p.field == &Layer::length;
+        float* f = &(L.*(p.field));
+        const float mx = p.field == &Layer::segmentGap && L.shape == Shape::Segments ? segGapMax : p.mx;
+        field(p.id, isLength && splitV ? T("lbl.lengthH") : T(p.label), f, p.mn, mx, p.step, p.dec, p.unit, false,
+              effectiveNote(f));
+        // Separate vertical rays: lengthV == 0 means "same as length".
+        if (isLength && splitV) field("p.lenv", T("lbl.lengthV"), &L.lengthV, 1, 60, 1, 0, L" px");
         if (L.shape == Shape::Segments && p.field == &Layer::thickness) {
           float n = static_cast<float>(L.segments);
-          if (ui_.Slider(MakeId("p.segs"), Rc(x0, y, x1, y + rowH), T("lbl.segments"), &n, 2, 12, 1, 0, {}, false, labelW)) {
-            L.segments = static_cast<int>(n);
-            changed = true;
-          }
-          y += stride;
+          field("p.segs", T("lbl.segments"), &n, 2, 12, 1, 0, L"");
+          L.segments = static_cast<int>(n);
         }
       }
       if (L.shape == Shape::Cross || L.shape == Shape::XCross) {
-        ui_.Text(T("lbl.rays"), Rc(x0, y, x0 + labelW, y + rowH), Font::Small, t.ink2);
-        const wchar_t* arrows[] = {L"↑", L"→", L"↓", L"←"};
+        // Ray chips fill the field column; the last remaining ray cannot be switched off.
+        rowLabel(T("lbl.rays"));
+        constexpr wchar_t arrows[] = {icon::Up, 0xE72A /*forward*/, icon::Down, 0xE72B /*back*/};
+        constexpr float cg = 4;
+        const float cw = std::floor((x1 - fx - 3 * cg) / 4);
+        int on = 0;
+        for (int i = 0; i < 4; ++i) on += (L.rays >> i) & 1;
         for (int i = 0; i < 4; ++i) {
-          const float bx = x0 + labelW + 6 + i * 32;
-          if (ui_.Chip(MakeId("p.ray", i), Rc(bx, y + 2, bx + 28, y + rowH - 2), arrows[i], (L.rays & (1 << i)) != 0)) {
-            L.rays ^= 1 << i;
-            changed = true;
+          const float bx = i == 3 ? x1 - cw : fx + i * (cw + cg);
+          const bool lit = (L.rays & (1 << i)) != 0;
+          const D2D1_RECT_F r = Rc(bx, y, bx + cw, y + rowH);
+          if (lit && on == 1) Tip(r, T("ed.lastRay"));
+          // Toggle in the value-field style: tonal accent fill when the ray is on.
+          const bool hover = ui_.Hover(r);
+          const bool clicked = ui_.ClickArea(MakeId("p.ray", i), r);
+          ui_.FillRound(r, ui::kRadiusCtl, t.field);
+          if (lit) ui_.FillRound(r, ui::kRadiusCtl, WithAlpha(t.acc, t.dark ? 0.26f : 0.20f));
+          if (hover) ui_.FillRound(r, ui::kRadiusCtl, t.sel);
+          ui_.Glyph(arrows[i], r, lit ? t.ink : t.ink3);
+          if (clicked) {
+            if (lit && on == 1) {
+              Toast(T("ed.lastRay"));
+            } else {
+              L.rays ^= 1 << i;
+              changed = true;
+            }
           }
         }
         y += stride;
       }
+      if (vertical) {
+        bool split = splitV;
+        if (switchRow("p.splitv", T("lbl.splitV"), &split)) {
+          L.lengthV = split ? std::max(1.f, L.length) : 0.f;
+          changed = true;
+        }
+      }
+      bool* option = nullptr;
+      const wchar_t* optionLabel = nullptr;
       switch (L.shape) {
         case Shape::Cross:
         case Shape::XCross:
         case Shape::TShape:
-        case Shape::Plus: switchRow("p.round", T("lbl.roundCaps"), &L.round); break;
-        case Shape::Dot: switchRow("p.round", T("lbl.roundDot"), &L.round); break;
+        case Shape::Plus: option = &L.round, optionLabel = T("lbl.roundCaps"); break;
+        case Shape::Dot: option = &L.round, optionLabel = T("lbl.roundDot"); break;
         case Shape::Box:
         case Shape::Diamond:
-        case Shape::Triangle: switchRow("p.filled", T("lbl.filled"), &L.filled); break;
+        case Shape::Triangle: option = &L.filled, optionLabel = T("lbl.filled"); break;
         default: break;
       }
+      if (option && switchRow("p.option", optionLabel, option)) changed = true;
       if (CrossLike(L.shape)) {
         bool dot = hasDot;
-        const float mid = std::round(y + rowH / 2);
-        ui_.Text(T("lbl.centerDot"), Rc(x0, y, x1 - 48, y + rowH), Font::Small, t.ink2);
-        if (ui_.Switch(MakeId("p.cdot"), Rc(x1 - 32, mid - 9, x1, mid + 9), &dot)) *dotRequest = dot ? 1 : -1;
-        y += stride;
+        if (switchRow("p.cdot", T("lbl.centerDot"), &dot)) *dotRequest = dot ? 1 : -1;
       }
     }
-    y += 10;
+    y += groupGap - 6;
   }
 
-  // Colour: hex in the heading, one row of swatches, opacity.
+  // Fill: colour, opacity, blur.
   {
-    const std::wstring hex = Widen(ColorToHex(L.fill));
-    const bool open = edOpen_[1];
-    const float hexW = 100;
-    if (open) {
-      if (!ui_.IsFocused(MakeId("p.hex"))) editHex_ = hex;
-      const D2D1_RECT_F hf = Rc(x1 - hexW, y + 1, x1, y + 27);
-      if (ui_.TextField(MakeId("p.hex"), Rc(hf.left + 26, hf.top, hf.right, hf.bottom), &editHex_, L"#RRGGBB", 9, nullptr,
-                        true)) {
-        bool ok = false;
-        const Color c = ColorFromHex(Narrow(editHex_), &ok);
-        if (ok) {
-          L.fill = c;
-          changed = true;
-        }
-      }
-      ColorChip(Rc(hf.left, hf.top + 3, hf.left + 20, hf.bottom - 3), L.fill, 0);
-    } else {
-      const float tw = std::ceil(ui_.Measure(hex, Font::Mono));
-      ui_.FillRound(Rc(x1 - 24 - tw - 22, y + 9, x1 - 24 - tw - 12, y + 19), 3, ToD2D(L.fill));
+    const std::wstring summary = Fmt(L"%s · %d%%", Widen(ColorToHex(L.fill)).c_str(), static_cast<int>(std::lround(L.opacity * 100)));
+    if (header(1, T("ed.fill"), summary, 0)) {
+      colorRow("p.hex", T("ed.color"), L.fill, editHex_, 0);
+      percent("p.op", T("lbl.opacity"), &L.opacity);
+      field("p.blur", T("lbl.blur"), &L.blur, 0, kMaxBlur, 0.5f, 1, L" px");
     }
-    if (header(1, T("ed.color"), open ? std::wstring() : hex, open ? hexW + 12 : 0)) {
-      const int n = static_cast<int>(std::size(kFillPalette));
-      constexpr float sg = 5;
-      const float sw = std::min(22.f, std::floor((x1 - x0 - 6 - sg * (n - 1)) / n));
-      const float step = std::floor((x1 - x0 - 6 - sw) / (n - 1));
-      for (int i = 0; i < n; ++i) {
-        const float sx = x0 + 3 + i * step;
-        if (ui_.Swatch(MakeId("p.fill", i), Rc(sx, y + 3, sx + sw, y + 3 + sw), ToD2D(kFillPalette[i]),
-                       SameRgb(L.fill, kFillPalette[i]))) {
-          L.fill = kFillPalette[i];
-          changed = true;
-        }
-      }
-      y += sw + 12;
-      float op = L.opacity * 100;
-      if (ui_.Slider(MakeId("p.op"), Rc(x0, y, x1, y + rowH), T("lbl.opacity"), &op, 5, 100, 5, 0, L"%", false, labelW)) {
-        L.opacity = op / 100.f;
-        changed = true;
-      }
-      y += stride;
-    }
-    y += 10;
+    y += groupGap - 6;
   }
 
-  // Outline: the switch lives in the heading; controls appear only when it is on.
+  // Outline: the same rows in the same order, plus thickness; the switch sits on the heading row.
   {
     const float hy = y;
     const std::wstring summary =
-        L.outline ? Fmt(L"%s px · %s", Num(L.outlineThickness, 0).c_str(), Widen(ColorToHex(L.outlineColor)).c_str())
+        L.outline ? Fmt(L"%s · %s px", Widen(ColorToHex(L.outlineColor)).c_str(), Num(L.outlineThickness, 0).c_str())
                   : std::wstring();
-    // Open and on: colour chip and hex sit in the heading, left of the switch (same as the fill section).
-    const bool showHex = edOpen_[2] && L.outline;
-    constexpr float hexW = 100;
-    if (showHex) {
-      const ui::Id hexId = MakeId("p.ohex");
-      if (!ui_.IsFocused(hexId)) editOutlineHex_ = Widen(ColorToHex(L.outlineColor));
-      const D2D1_RECT_F hf = Rc(x1 - 44 - hexW, y + 1, x1 - 44, y + 27);
-      if (ui_.TextField(hexId, Rc(hf.left + 26, hf.top, hf.right, hf.bottom), &editOutlineHex_, L"#RRGGBB", 9, nullptr,
-                        true)) {
-        bool ok = false;
-        const Color c = ColorFromHex(Narrow(editOutlineHex_), &ok);
-        if (ok) {
-          L.outlineColor = c;
-          changed = true;
-        }
-      }
-      ColorChip(Rc(hf.left, hf.top + 3, hf.left + 20, hf.bottom - 3), L.outlineColor, 1);
-    }
-    const bool open = header(2, T("ed.outline"), summary, showHex ? 44 + hexW + 12 : 44, L.outline);
-    const float mid = std::round(hy + 14);
-    if (ui_.Switch(MakeId("p.ol"), Rc(x1 - 32, mid - 9, x1, mid + 9), &L.outline)) {
+    const bool open = header(2, T("ed.outline"), summary, switchW + 12, L.outline);
+    const float mid = std::round(hy + headH / 2);
+    if (ui_.Switch(MakeId("p.ol"), Rc(x1 - switchW, mid - 10, x1, mid + 10), &L.outline)) {
       changed = true;
       if (L.outline) edOpen_[2] = true;
     }
-    if (open && L.outline) {
-      slider("p.olt", T("lbl.thickness"), &L.outlineThickness, 1, 4, 1, 0, L" px");
-      ui_.Text(T("ed.color"), Rc(x0, y, x0 + labelW, y + rowH), Font::Small, t.ink2);
-      for (int i = 0; i < static_cast<int>(std::size(kOutlinePalette)); ++i) {
-        const float sx = x0 + labelW + 9 + i * 28;
-        const D2D1_RECT_F r = Rc(sx, y + 5, sx + 18, y + 23);
-        if (ui_.Swatch(MakeId("p.olc", i), r, ToD2D(kOutlinePalette[i]), SameRgb(L.outlineColor, kOutlinePalette[i]))) {
-          L.outlineColor = kOutlinePalette[i];
-          changed = true;
-        }
-      }
-      y += stride;
-      float oop = L.outlineOpacity * 100;
-      if (ui_.Slider(MakeId("p.oop"), Rc(x0, y, x1, y + rowH), T("lbl.opacity"), &oop, 5, 100, 5, 0, L"%", false, labelW)) {
-        L.outlineOpacity = oop / 100.f;
-        changed = true;
-      }
-      y += stride;
+    if (open) {
+      colorRow("p.ohex", T("ed.color"), L.outlineColor, editOutlineHex_, 1);
+      percent("p.oop", T("lbl.opacity"), &L.outlineOpacity);
+      field("p.oblur", T("lbl.blur"), &L.outlineBlur, 0, kMaxBlur, 0.5f, 1, L" px");
+      field("p.olt", T("lbl.thickness"), &L.outlineThickness, 1, 4, 1, 0, L" px");
     }
-    y += 10;
+    y += groupGap - 6;
   }
 
   // Position: rotation and per-layer offset.
@@ -1814,9 +1888,9 @@ float SettingsApp::LayerProps(Layer& L, float x0, float x1, float y, bool& chang
     const std::wstring summary = Fmt(L"%d° · %d, %d", static_cast<int>(L.rotation), static_cast<int>(L.offsetX),
                                      static_cast<int>(L.offsetY));
     if (header(3, T("ed.position"), summary, 0)) {
-      slider("p.rot", T("lbl.rotation"), &L.rotation, 0, 359, 1, 0, L"°");
-      slider("p.ox", T("lbl.offsetX"), &L.offsetX, -40, 40, 1, 0, L" px", true);
-      slider("p.oy", T("lbl.offsetY"), &L.offsetY, -40, 40, 1, 0, L" px", true);
+      field("p.rot", T("lbl.rotation"), &L.rotation, 0, 359, 1, 0, L"°");
+      field("p.ox", T("lbl.offsetX"), &L.offsetX, -40, 40, 1, 0, L" px", true);
+      field("p.oy", T("lbl.offsetY"), &L.offsetY, -40, 40, 1, 0, L" px", true);
     }
   }
   return y;
@@ -1955,6 +2029,75 @@ void SettingsApp::PageHotkeys(D2D1_RECT_F full) {
 
 // ───────────────────────────── profiles ─────────────────────────────
 
+bool SettingsApp::HasExe(PickTarget target, const std::wstring& exe) const {
+  const Settings& s = cfg_.settings;
+  const auto in = [&](const std::vector<std::wstring>& l) { return std::find(l.begin(), l.end(), exe) != l.end(); };
+  switch (target) {
+    case PickTarget::Filter: return in(s.filterList);
+    case PickTarget::Safe: return in(s.safeList);
+    case PickTarget::Profile:
+      return std::any_of(s.profiles.begin(), s.profiles.end(), [&](const GameProfile& p) { return p.exe == exe; });
+    default: return false;
+  }
+}
+
+bool SettingsApp::AddExeTo(PickTarget target, const std::wstring& name) {
+  std::vector<std::wstring> one;
+  if (!AddExe(one, name)) return false;  // normalises: trimmed, lowercase, ".exe" appended when missing
+  const std::wstring& exe = one.front();
+  if (HasExe(target, exe)) return false;
+  Settings& s = cfg_.settings;
+  switch (target) {
+    case PickTarget::Filter: s.filterList.push_back(exe); break;
+    case PickTarget::Safe: s.safeList.push_back(exe); break;
+    case PickTarget::Profile: {
+      GameProfile p;
+      p.exe = exe;
+      p.crosshairId = cfg_.activeId;
+      s.profiles.push_back(p);
+      break;
+    }
+    default: return false;
+  }
+  PushConfig();
+  return true;
+}
+
+float SettingsApp::ExeAddRow(const char* key, PickTarget target, std::wstring& draft, float x0, float x1, float y) {
+  constexpr float h = 34;
+  float x = x0;
+  // Primary: pick the game's exe from disk (only its file name is stored; matching is by name).
+  const float bw = std::ceil(ui_.Measure(T("btn.browseExe"), Font::Button)) + 56;
+  if (ui_.Button(MakeId(key, 2), Rc(x, y, x + bw, y + h), T("btn.browseExe"), Btn::Secondary, true, icon::Folder)) {
+    pendingBrowse_ = target;
+  }
+  x += bw + 8;
+  const float rw = std::ceil(ui_.Measure(T("btn.running"), Font::Button)) + 56;
+  const D2D1_RECT_F rb = Rc(x, y, x + rw, y + h);
+  const bool open = popup_ == Popup::Running && runTarget_ == target;
+  if (ui_.Button(MakeId(key, 3), rb, T("btn.running"), open ? Btn::Secondary : Btn::Ghost, true, icon::Apps)) {
+    popup_ = Popup::Running;
+    runTarget_ = target;
+    popupAnchor_ = rb;
+    running_ = RunningApps();
+    runSearch_.clear();
+    runScroll_ = 0;
+    ui_.SetFocus(MakeId("run.search"));
+  }
+  x += rw + 16;
+  // Secondary: type a name, Enter adds it.
+  bool submitted = false;
+  const float fw = std::min(220.f, x1 - x);
+  if (fw >= 140) {
+    ui_.TextField(MakeId(key, 1), Rc(x, y, x + fw, y + h), &draft, T("prof.exeTyped"), 64, &submitted, true);
+    if (submitted && !Trim(draft).empty()) {
+      if (!AddExeTo(target, draft)) Toast(T("toast.exeExists"));
+      draft.clear();
+    }
+  }
+  return y + h;
+}
+
 float SettingsApp::ExeList(const char* key, std::vector<std::wstring>& list, float x0, float x1, float y,
                            PickTarget target, std::wstring& draft) {
   const auto& t = ui_.th();
@@ -1976,49 +2119,99 @@ float SettingsApp::ExeList(const char* key, std::vector<std::wstring>& list, flo
   }
   if (list.empty()) ui_.Text(T("prof.empty"), Rc(x0, y, x1, y + 30), Font::Small, t.ink3);
   y += 30 + 14;
-
-  bool submitted = false;
-  ui_.TextField(MakeId(key, 1), Rc(x0, y, x0 + 240, y + 34), &draft, T("prof.exePlaceholder"), 64, &submitted, true);
-  if (ui_.Button(MakeId(key, 2), Rc(x0 + 248, y, x0 + 352, y + 34), T("btn.add"), Btn::Secondary, true, icon::Add) ||
-      submitted) {
-    if (Trim(draft).empty()) {
-      // Nothing typed: offer the running apps instead of silently doing nothing.
-      pickTarget_ = target;
-      running_ = RunningApps();
-      Toast(T("toast.pickExe"));
-    } else if (AddExe(list, draft)) {
-      PushConfig();
-    }
-    draft.clear();
-  }
-  if (ui_.Button(MakeId(key, 3), Rc(x0 + 360, y, x0 + 520, y + 34), T("btn.fromRunning"),
-                 pickTarget_ == target ? Btn::Secondary : Btn::Ghost)) {
-    pickTarget_ = pickTarget_ == target ? PickTarget::None : target;
-    if (pickTarget_ != PickTarget::None) running_ = RunningApps();
-  }
-  y += 34 + 12;
-  if (pickTarget_ == target) {
-    cx = x0;
-    for (size_t i = 0; i < running_.size(); ++i) {
-      const float w = std::round(ui_.Measure(running_[i], Font::Small) + 24);
-      if (cx + w > x1 && cx > x0) {
-        cx = x0;
-        y += 34;
-      }
-      if (ui_.Chip(MakeId(key, 1000 + static_cast<int>(i)), Rc(cx, y, cx + w, y + 28), running_[i], false)) {
-        if (AddExe(list, running_[i])) PushConfig();
-        pickTarget_ = PickTarget::None;
-      }
-      cx += w + 6;
-    }
-    if (running_.empty()) ui_.Text(T("prof.noRunning"), Rc(x0, y, x1, y + 28), Font::Small, t.ink3);
-    y += 28 + 16;
-  }
+  y = ExeAddRow(key, target, draft, x0, x1, y) + 12;
   if (removeIdx >= 0) {
     list.erase(list.begin() + removeIdx);
     PushConfig();
   }
   return y;
+}
+
+void SettingsApp::RunningPopover() {
+  const auto& t = ui_.th();
+  if (page_ != Page::Profiles || runTarget_ == PickTarget::None) {
+    ClosePopup();
+    return;
+  }
+  const std::wstring needle = Lower(Trim(runSearch_));
+  std::vector<RunningApp*> items;
+  for (RunningApp& a : running_) {
+    if (needle.empty() || Lower(a.name).find(needle) != std::wstring::npos || a.exe.find(needle) != std::wstring::npos) {
+      items.push_back(&a);
+    }
+  }
+  // Background processes follow the windowed apps under a quiet divider.
+  size_t firstBackground = items.size();
+  for (size_t i = 0; i < items.size(); ++i) {
+    if (!items[i]->windowed) {
+      firstBackground = i;
+      break;
+    }
+  }
+  const bool divider = firstBackground < items.size();
+  constexpr float pad = 8, searchH = 34, rowH = 40, divH = 30, iconS = 20;
+  const float w = 440;
+  const float contentH = rowH * static_cast<float>(items.size()) + (divider ? divH : 0.f);
+  const float listH = std::min(rowH * 9.f, std::max(rowH, contentH));
+  const D2D1_RECT_F r = PlacePopover(popupAnchor_, w, pad + searchH + 6 + listH + pad, ui_.size(), false);
+  ui_.Popover(r);
+  popupRect_ = r;
+
+  bool submitted = false;
+  if (ui_.TextField(MakeId("run.search"), Rc(r.left + pad, r.top + pad, r.right - pad, r.top + pad + searchH),
+                    &runSearch_, T("run.search"), 40, &submitted, false, icon::Search)) {
+    runScroll_ = 0;
+  }
+  RunningApp* picked = nullptr;
+  if (submitted && !items.empty()) picked = items.front();
+
+  const D2D1_RECT_F view = Rc(r.left + pad, r.top + pad + searchH + 6, r.right - 4, r.bottom - pad);
+  const float off = ui_.BeginScroll(view, &runScroll_, contentH);
+  if (items.empty()) {
+    ui_.Text(running_.empty() ? T("prof.noRunning") : T("lib.noResults"), Rc(view.left + 10, view.top, view.right, view.top + rowH),
+             Font::Small, t.ink3);
+  }
+  float y = view.top - off;
+  for (size_t i = 0; i < items.size(); ++i) {
+    if (divider && i == firstBackground) {
+      if (y + divH >= view.top && y <= view.bottom) {
+        ui_.Label(T("run.background"), Rc(view.left + 10, y + 8, r.right - pad - 10, y + divH), t.ink3);
+      }
+      y += divH;
+    }
+    RunningApp& a = *items[i];
+    const D2D1_RECT_F row = Rc(view.left, y + 1, r.right - pad - 6, y + rowH - 1);
+    y += rowH;
+    if (row.bottom < view.top || row.top > view.bottom) continue;
+    const bool added = HasExe(runTarget_, a.exe);
+    const bool hover = !added && ui_.Hover(row);
+    if (hover) ui_.FillRound(row, ui::kRadiusCtl, t.field);
+    // Icons are extracted lazily, only for rows that become visible.
+    if (!a.iconTried) {
+      a.iconTried = true;
+      if (!a.path.empty()) a.icon = ExeIcon(a.path, iconS);
+    }
+    const float mid = std::round((row.top + row.bottom) / 2);
+    const D2D1_RECT_F ic = Rc(row.left + 10, mid - iconS / 2, row.left + 10 + iconS, mid + iconS / 2);
+    if (a.icon) {
+      dc_->DrawBitmap(a.icon.Get(), &ic, added ? 0.45f : 1.f, D2D1_INTERPOLATION_MODE_LINEAR, nullptr, nullptr);
+    } else {
+      ui_.FillRound(ic, 4, t.field);
+      ui_.Glyph(icon::Game, ic, t.ink3);
+    }
+    const float ew = std::ceil(ui_.Measure(a.exe, Font::Mono)) + 2;
+    const float right = row.right - 10 - (added ? 22.f : 0.f);
+    const float exeL = std::max(ic.right + 120, right - ew);
+    ui_.Text(a.exe, Rc(exeL, row.top, right, row.bottom), Font::Mono, t.ink3, Align::Right);
+    ui_.Text(a.name, Rc(ic.right + 12, row.top, exeL - 12, row.bottom), Font::Body, added ? t.ink3 : t.ink);
+    if (added) ui_.Glyph(icon::Check, Rc(row.right - 28, row.top, row.right - 8, row.bottom), t.acc);
+    if (!added && ui_.ClickArea(MakeId("run.item", static_cast<int>(i)), row)) picked = &a;
+  }
+  ui_.EndScroll(view, off, contentH);
+  if (picked) {
+    if (!AddExeTo(runTarget_, picked->exe)) Toast(T("toast.exeExists"));
+    ClosePopup();
+  }
 }
 
 void SettingsApp::PageProfiles(D2D1_RECT_F full) {
@@ -2089,56 +2282,7 @@ void SettingsApp::PageProfiles(D2D1_RECT_F full) {
     PushConfig();
   }
   y += 10;
-  {
-    std::vector<std::wstring> scratch;
-    for (const auto& p : s.profiles) scratch.push_back(p.exe);
-    const size_t before = scratch.size();
-    bool submitted = false;
-    ui_.TextField(MakeId("prof.new"), Rc(x0, y, x0 + 240, y + 34), &draftProfile_, T("prof.exePlaceholder"), 64,
-                  &submitted, true);
-    bool add = ui_.Button(MakeId("prof.add"), Rc(x0 + 248, y, x0 + 352, y + 34), T("btn.add"), Btn::Secondary, true,
-                          icon::Add) ||
-               submitted;
-    if (add && Trim(draftProfile_).empty()) {
-      // Nothing typed: offer the running apps instead of silently doing nothing.
-      add = false;
-      pickTarget_ = PickTarget::Profile;
-      running_ = RunningApps();
-      Toast(T("toast.pickExe"));
-    }
-    if (ui_.Button(MakeId("prof.run"), Rc(x0 + 360, y, x0 + 520, y + 34), T("btn.fromRunning"),
-                   pickTarget_ == PickTarget::Profile ? Btn::Secondary : Btn::Ghost)) {
-      pickTarget_ = pickTarget_ == PickTarget::Profile ? PickTarget::None : PickTarget::Profile;
-      if (pickTarget_ != PickTarget::None) running_ = RunningApps();
-    }
-    y += 34 + 12;
-    if (add) AddExe(scratch, draftProfile_);
-    if (pickTarget_ == PickTarget::Profile) {
-      float cx = x0;
-      for (size_t i = 0; i < running_.size(); ++i) {
-        const float w = std::round(ui_.Measure(running_[i], Font::Small) + 24);
-        if (cx + w > x1 && cx > x0) {
-          cx = x0;
-          y += 34;
-        }
-        if (ui_.Chip(MakeId("prof.r", static_cast<int>(i)), Rc(cx, y, cx + w, y + 28), running_[i], false)) {
-          AddExe(scratch, running_[i]);
-          pickTarget_ = PickTarget::None;
-        }
-        cx += w + 6;
-      }
-      if (running_.empty()) ui_.Text(T("prof.noRunning"), Rc(x0, y, x1, y + 28), Font::Small, t.ink3);
-      y += 28 + 16;
-    }
-    if (scratch.size() > before) {
-      GameProfile p;
-      p.exe = scratch.back();
-      p.crosshairId = cfg_.activeId;
-      s.profiles.push_back(p);
-      draftProfile_.clear();
-      PushConfig();
-    }
-  }
+  y = ExeAddRow("prof.new", PickTarget::Profile, draftProfile_, x0, x1, y);
   y += 28;
 
   // Process filter.
@@ -2258,14 +2402,25 @@ void SettingsApp::PageSettings(D2D1_RECT_F full) {
   y += 4;
   {
     const D2D1_RECT_F row = Rc(x0, y, x1, y + rowH);
-    const float cl = RowText(row, T("set.language"), nullptr, 260);
+    // Nine languages do not fit a segmented control: a field that opens a list.
+    const float cl = RowText(row, T("set.language"), nullptr, 320);
     const float mid = std::round((row.top + row.bottom) / 2);
-    int lang = s.language == "en" ? 1 : 0;
-    if (ui_.Segmented(MakeId("set.lang"), Rc(cl, mid - 16, row.right - 16, mid + 16), {L"Українська", L"English"}, &lang)) {
-      s.language = lang == 1 ? "en" : "uk";
-      SetLanguage(s.language);
-      PushConfig();
+    const D2D1_RECT_F f = Rc(cl, mid - 16, row.right - 16, mid + 16);
+    const bool open = popup_ == Popup::Language;
+    const bool hover = ui_.Hover(f);
+    if (ui_.ClickArea(MakeId("set.lang"), f)) {
+      popup_ = Popup::Language;
+      popupAnchor_ = f;
     }
+    ui_.FillRound(f, ui::kRadiusCtl, t.field);
+    if (hover && !open) ui_.FillRound(f, ui::kRadiusCtl, t.sel);
+    if (open) ui_.StrokeRound(f, ui::kRadiusCtl, t.acc, 1.5f);
+    const wchar_t* name = L"English";
+    for (const LanguageInfo& l : Languages()) {
+      if (Language() == l.code) name = l.name;
+    }
+    ui_.Text(name, Rc(f.left + 12, f.top, f.right - 30, f.bottom), Font::Body, t.ink);
+    ui_.Glyph(open ? icon::ChevronUp : icon::ChevronDown, Rc(f.right - 28, f.top, f.right - 8, f.bottom), t.ink3);
     y += rowH;
   }
   {
@@ -2358,13 +2513,29 @@ void SettingsApp::PageSettings(D2D1_RECT_F full) {
 
   // Files.
   y = ui_.Section(x0, x1, y, T("set.files"));
-  const float fw = std::ceil(ui_.Measure(T("btn.openFolder"), Font::Button)) + 56;
-  if (ui_.Button(MakeId("set.folder"), Rc(x0, y, x0 + fw, y + 34), T("btn.openFolder"), Btn::Secondary, true, icon::Folder)) {
-    ShellExecuteW(hwnd_, L"open", ConfigDir().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  {
+    // Folder rows: title and the actual path left, an open button right.
+    const std::wstring dirs[] = {ConfigDir(), LogDir()};
+    const char* titles[] = {"set.configFolder", "set.logsFolder"};
+    const wchar_t glyphs[] = {icon::Folder, icon::Logs};
+    const float bw = std::ceil(ui_.Measure(T("btn.openShort"), Font::Button)) + 56;
+    card(2 * rowH + 8);
+    y += 4;
+    for (int i = 0; i < 2; ++i) {
+      const D2D1_RECT_F row = Rc(x0, y, x1, y + rowH);
+      const float cl = RowText(row, T(titles[i]), dirs[i].c_str(), bw);
+      const float mid = std::round((row.top + row.bottom) / 2);
+      if (ui_.Button(MakeId("set.folder", i), Rc(cl, mid - 16, row.right - 16, mid + 16), T("btn.openShort"),
+                     Btn::Secondary, true, glyphs[i])) {
+        ShellExecuteW(hwnd_, L"open", dirs[i].c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+      }
+      y += rowH;
+    }
+    y += 4 + 16;
   }
   const wchar_t* resetLabel = confirmReset_ ? T("btn.confirmReset") : T("btn.resetAll");
   const float rw = std::ceil(ui_.Measure(resetLabel, Font::Button)) + 48;
-  if (ui_.Button(MakeId("set.reset"), Rc(x0 + fw + 8, y, x0 + fw + 8 + rw, y + 34), resetLabel,
+  if (ui_.Button(MakeId("set.reset"), Rc(x0, y, x0 + rw, y + 34), resetLabel,
                  confirmReset_ ? Btn::Primary : Btn::Ghost, true, icon::Reset)) {
     if (confirmReset_) {
       const std::string keepLanguage = cfg_.settings.language;
@@ -2381,9 +2552,213 @@ void SettingsApp::PageSettings(D2D1_RECT_F full) {
       confirmReset_ = true;
     }
   }
-  y += 34 + 24;
+  y += 34 + 28;
+
+  y = AboutSection(x0, x1, y) + 24;
   contentH = y + off - area.top;
   ui_.EndScroll(view, off, contentH);
+}
+
+void SettingsApp::LanguagePopover() {
+  const auto& t = ui_.th();
+  if (page_ != Page::Settings) {
+    ClosePopup();
+    return;
+  }
+  constexpr float pad = 6, rowH = 34;
+  const auto langs = Languages();
+  const float w = std::max(240.f, popupAnchor_.right - popupAnchor_.left);
+  const D2D1_RECT_F r =
+      PlacePopover(popupAnchor_, w, pad * 2 + rowH * static_cast<float>(langs.size()), ui_.size(), false);
+  ui_.Popover(r);
+  popupRect_ = r;
+  float y = r.top + pad;
+  for (size_t i = 0; i < langs.size(); ++i) {
+    const D2D1_RECT_F row = Rc(r.left + pad, y, r.right - pad, y + rowH);
+    y += rowH;
+    const bool current = Language() == langs[i].code;
+    if (ui_.Hover(row)) ui_.FillRound(row, ui::kRadiusCtl, t.field);
+    ui_.Text(langs[i].name, Rc(row.left + 12, row.top, row.right - 36, row.bottom), Font::Body, current ? t.ink : t.ink2);
+    if (current) ui_.Glyph(icon::Check, Rc(row.right - 30, row.top, row.right - 10, row.bottom), t.acc);
+    if (ui_.ClickArea(MakeId("lang.item", static_cast<int>(i)), row)) {
+      cfg_.settings.language = langs[i].code;
+      SetLanguage(cfg_.settings.language);
+      PushConfig();
+      ClosePopup();
+      return;
+    }
+  }
+}
+
+// ───────────────────────────── about and updates ─────────────────────────────
+
+namespace {
+
+// Lucide icons (ISC licence), 24-unit grid.
+constexpr char kIconGithub[] =
+    "M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5"
+    "-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5"
+    "-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4M9 18c-4.51 2-5-2-7-2";
+constexpr char kIconUser[] = "M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2M8 7a4 4 0 1 0 8 0a4 4 0 1 0-8 0";
+constexpr char kIconExternal[] = "M7 17 17 7M8 7h9v9";
+
+}  // namespace
+
+void SettingsApp::StartUpdateCheck() {
+  updState_ = UpdState::Checking;
+  const HWND hwnd = hwnd_;
+  std::thread([hwnd] {
+    auto* r = new update::Release;
+    const bool ok = update::FetchLatest(*r);
+    if (!PostMessageW(hwnd, kMsgUpdate, ok ? 1 : 0, reinterpret_cast<LPARAM>(r))) delete r;
+  }).detach();
+}
+
+void SettingsApp::StartUpdateDownload() {
+  updState_ = UpdState::Downloading;
+  const HWND hwnd = hwnd_;
+  std::thread([hwnd, release = updRelease_] {
+    auto* dir = new std::wstring;
+    const bool ok = update::Download(release, *dir);
+    if (!PostMessageW(hwnd, kMsgUpdate, ok ? 3 : 2, reinterpret_cast<LPARAM>(dir))) delete dir;
+  }).detach();
+}
+
+void SettingsApp::OnUpdateResult(WPARAM kind, LPARAM payload) {
+  if (kind <= 1) {
+    std::unique_ptr<update::Release> r(reinterpret_cast<update::Release*>(payload));
+    if (kind == 0) {
+      updState_ = UpdState::CheckFailed;
+    } else {
+      updRelease_ = *r;
+      updState_ = update::CompareVersions(r->version, appVersion_) > 0 ? UpdState::Available : UpdState::UpToDate;
+    }
+  } else {
+    std::unique_ptr<std::wstring> dir(reinterpret_cast<std::wstring*>(payload));
+    // The editor may have gained unsaved changes while the download ran.
+    if (kind == 3 && !DraftDirty() && update::Install(*dir)) {
+      DestroyWindow(hwnd_);  // the new settings window takes over once this process exits
+      return;
+    }
+    updState_ = UpdState::Failed;
+  }
+  Invalidate();
+}
+
+float SettingsApp::AboutSection(float x0, float x1, float y) {
+  const auto& t = ui_.th();
+  y = ui_.Section(x0, x1, y, T("set.about"));
+  constexpr float pad = 18, logoS = 48, btnH = 34, whoRowH = 58;
+  const float descW = x1 - x0 - 2 * pad;
+  const float descH = ui_.Paragraph(T("about.desc"), Rc(0, 0, descW, 400), Font::Small, t.ink2, false);
+  const float cardH = pad + logoS + 16 + btnH + 16 + descH + 16 + 2 * whoRowH + pad;
+  ui_.FillRound(Rc(x0, y, x1, y + cardH), ui::kRadiusCard, t.raised);
+  float cy = y + pad;
+  const float cx = x0 + pad, cr = x1 - pad;
+
+  // App tile and name.
+  {
+    const D2D1_RECT_F tile = Rc(cx, cy, cx + logoS, cy + logoS);
+    ui_.FillRound(tile, logoS * 0.22f, D2D1::ColorF(0xC65A32));
+    // DrawLogo fits the glyph itself into the box; the app icon gives it 72% of the tile.
+    const float g = std::round(logoS * 0.72f);
+    const float gx = cx + (logoS - g) / 2, gy = cy + (logoS - g) / 2;
+    DrawLogo(dc_.Get(), Rc(gx, gy, gx + g, gy + g), D2D1::ColorF(0xFBF8F1), D2D1::ColorF(0x17181A));
+    ui_.Text(L"Sightline", Rc(cx + logoS + 14, cy + 2, cr, cy + 28), Font::H2, t.ink);
+    ui_.Text(Fmt(T("about.version"), Widen(appVersion_).c_str()), Rc(cx + logoS + 14, cy + 28, cr, cy + 46), Font::Mono,
+             t.ink3);
+    cy += logoS + 16;
+  }
+
+  // Update: check, then install (or open the releases page when the release has no zip).
+  {
+    const bool busy = updState_ == UpdState::Checking || updState_ == UpdState::Downloading;
+    const wchar_t* checkLabel = updState_ == UpdState::Checking ? T("about.checking") : T("about.check");
+    const float cw = std::ceil(ui_.Measure(checkLabel, Font::Button)) + 56;
+    float bx = cx;
+    if (ui_.Button(MakeId("about.check"), Rc(bx, cy, bx + cw, cy + btnH), checkLabel, Btn::Secondary, !busy, icon::Reset)) {
+      StartUpdateCheck();
+    }
+    bx += cw + 8;
+    const bool offer = updState_ == UpdState::Available || updState_ == UpdState::Downloading || updState_ == UpdState::Failed;
+    if (offer) {
+      const bool direct = !updRelease_.zipUrl.empty() && updState_ != UpdState::Failed;
+      const std::wstring label = updState_ == UpdState::Downloading ? std::wstring(T("about.downloading"))
+                                 : direct ? Fmt(T("about.update"), Widen(updRelease_.version).c_str())
+                                          : std::wstring(T("about.download"));
+      const float uw = std::ceil(ui_.Measure(label, Font::Button)) + 56;
+      if (ui_.Button(MakeId("about.update"), Rc(bx, cy, bx + uw, cy + btnH), label, Btn::Primary,
+                     updState_ != UpdState::Downloading, direct ? icon::Down : icon::Export)) {
+        if (!direct) {
+          ShellExecuteW(hwnd_, L"open", update::kReleasesPage, nullptr, nullptr, SW_SHOWNORMAL);
+        } else if (DraftDirty()) {
+          Toast(T("about.saveFirst"));
+        } else {
+          StartUpdateDownload();
+        }
+      }
+      bx += uw + 8;
+    }
+    const wchar_t* status = nullptr;
+    switch (updState_) {
+      case UpdState::UpToDate: status = T("about.upToDate"); break;
+      case UpdState::CheckFailed: status = T("about.checkFailed"); break;
+      case UpdState::Failed: status = T("about.failed"); break;
+      default: break;
+    }
+    std::wstring available;
+    if (updState_ == UpdState::Available) available = Fmt(T("about.available"), Widen(updRelease_.version).c_str());
+    if (!available.empty()) status = available.c_str();
+    if (status) {
+      ui_.Text(status, Rc(bx + 6, cy, cr, cy + btnH), Font::Small,
+               updState_ == UpdState::Available ? t.acc : t.ink3);
+    }
+    cy += btnH + 16;
+  }
+
+  ui_.Paragraph(T("about.desc"), Rc(cx, cy, cx + descW, cy + descH), Font::Small, t.ink2);
+  cy += descH + 16;
+
+  // Links: the repository and the author, in one bordered box (Arcmix style).
+  {
+    const D2D1_RECT_F box = Rc(cx, cy, cr, cy + 2 * whoRowH);
+    struct Link {
+      const char* id;
+      const char* icon;
+      std::wstring title;
+      const wchar_t* sub;
+      const wchar_t* url;
+    };
+    const Link links[] = {
+        {"about.repo", kIconGithub, T("about.github"), T("about.githubSub"), update::kRepoPage},
+        {"about.author", kIconUser, L"Fenderenko", T("about.authorSub"), update::kAuthorPage},
+    };
+    for (int i = 0; i < 2; ++i) {
+      const D2D1_RECT_F row = Rc(box.left, box.top + i * whoRowH, box.right, box.top + (i + 1) * whoRowH);
+      if (ui_.Hover(row)) {
+        // Hover fill follows the box corners on the outer edge only.
+        ui_.PushClip(box);
+        ui_.FillRound(Rc(row.left, row.top - (i == 1 ? 12.f : 0.f), row.right, row.bottom + (i == 0 ? 12.f : 0.f)),
+                      10, t.sel);
+        ui_.PopClip();
+      }
+      const float mid = std::round((row.top + row.bottom) / 2);
+      const D2D1_POINT_2F c = D2D1::Point2F(row.left + 14 + 16, mid);
+      ui_.Circle(c, 16, WithAlpha(t.ink, 0.08f));
+      ui_.PathIcon(links[i].icon, Rc(c.x - 8, c.y - 8, c.x + 8, c.y + 8), t.ink, 1.8f);
+      const float tx = row.left + 14 + 32 + 12;
+      ui_.Text(links[i].title, Rc(tx, mid - 18, row.right - 40, mid + 1), Font::BodyBold, t.ink);
+      ui_.Text(links[i].sub, Rc(tx, mid + 1, row.right - 40, mid + 18), Font::Small, t.ink3);
+      ui_.PathIcon(kIconExternal, Rc(row.right - 30, mid - 7, row.right - 16, mid + 7), t.ink3, 2.f);
+      if (i == 1) ui_.HLine(box.left, box.right, row.top, t.line);
+      if (ui_.ClickArea(MakeId(links[i].id), row)) {
+        ShellExecuteW(hwnd_, L"open", links[i].url, nullptr, nullptr, SW_SHOWNORMAL);
+      }
+    }
+    ui_.StrokeRound(box, 10, t.line, 1.f);
+    cy = box.bottom + pad;
+  }
+  return y + cardH;
 }
 
 }  // namespace sl

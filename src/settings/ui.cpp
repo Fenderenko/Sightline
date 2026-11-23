@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cwchar>
+#include <cctype>
+#include <cstdlib>
 #include <cwctype>
 
 namespace sl::ui {
@@ -148,6 +150,7 @@ void Context::Begin(const Input& in, D2D1_SIZE_F size, float scale) {
   clips_.clear();
   prevWheelZones_.swap(wheelZones_);
   wheelZones_.clear();
+  controls_.clear();
   // A value entry whose slider was not drawn last frame (page change, collapsed section) is dropped.
   if (!valueEditSeen_) valueEdit_ = 0;
   valueEditSeen_ = false;
@@ -159,6 +162,14 @@ void Context::End() {
   if (in_->pressed && !focusClaimed_) focus_ = 0;
   if (in_->released || !in_->down) active_ = 0;
   while (!clips_.empty()) PopClip();
+  prevControls_ = controls_;
+}
+
+bool Context::OverControl(D2D1_POINT_2F p) const {
+  for (const D2D1_RECT_F& r : prevControls_) {
+    if (Inside(r, p)) return true;
+  }
+  return false;
 }
 
 float Context::Snap(float v) const { return std::round(v * scale_) / scale_; }
@@ -262,6 +273,166 @@ void Context::Glyph(wchar_t g, D2D1_RECT_F r, D2D1_COLOR_F c, bool large) {
   Text(std::wstring_view(s, 1), r, large ? Font::IconLg : Font::Icon, c, Align::Center);
 }
 
+namespace {
+
+// SVG path data → D2D geometry. Numbers may run together ("-1-3.5", ".08-1.25"); arc flags are
+// single digits.
+class PathParser {
+ public:
+  explicit PathParser(const char* s) : s_(s) {}
+
+  bool Build(ID2D1GeometrySink* sink) {
+    char cmd = 0;
+    D2D1_POINT_2F cur{}, start{}, lastCtrl{};
+    bool open = false, prevCubic = false;
+    const auto begin = [&](D2D1_POINT_2F p) {
+      if (open) sink->EndFigure(D2D1_FIGURE_END_OPEN);
+      sink->BeginFigure(p, D2D1_FIGURE_BEGIN_HOLLOW);
+      open = true;
+      start = p;
+    };
+    for (;;) {
+      Skip();
+      if (!*s_) break;
+      if (std::isalpha(static_cast<unsigned char>(*s_))) cmd = *s_++;
+      else if (!cmd) return false;
+      const bool rel = std::islower(static_cast<unsigned char>(cmd)) != 0;
+      const auto pt = [&](float x, float y) { return rel ? D2D1::Point2F(cur.x + x, cur.y + y) : D2D1::Point2F(x, y); };
+      bool cubic = false;
+      switch (std::toupper(static_cast<unsigned char>(cmd))) {
+        case 'M': {
+          float x, y;
+          if (!Num(x) || !Num(y)) return false;
+          cur = pt(x, y);
+          begin(cur);
+          cmd = rel ? 'l' : 'L';  // further pairs are implicit line-tos
+          break;
+        }
+        case 'L': {
+          float x, y;
+          if (!Num(x) || !Num(y)) return false;
+          cur = pt(x, y);
+          sink->AddLine(cur);
+          break;
+        }
+        case 'H': {
+          float x;
+          if (!Num(x)) return false;
+          cur.x = rel ? cur.x + x : x;
+          sink->AddLine(cur);
+          break;
+        }
+        case 'V': {
+          float y;
+          if (!Num(y)) return false;
+          cur.y = rel ? cur.y + y : y;
+          sink->AddLine(cur);
+          break;
+        }
+        case 'C':
+        case 'S': {
+          const bool smooth = std::toupper(static_cast<unsigned char>(cmd)) == 'S';
+          float v[6];
+          const int n = smooth ? 4 : 6;
+          for (int i = 0; i < n; ++i) {
+            if (!Num(v[i])) return false;
+          }
+          D2D1_POINT_2F c1 = prevCubic ? D2D1::Point2F(2 * cur.x - lastCtrl.x, 2 * cur.y - lastCtrl.y) : cur;
+          if (!smooth) c1 = pt(v[0], v[1]);
+          const D2D1_POINT_2F c2 = smooth ? pt(v[0], v[1]) : pt(v[2], v[3]);
+          const D2D1_POINT_2F end = smooth ? pt(v[2], v[3]) : pt(v[4], v[5]);
+          sink->AddBezier(D2D1::BezierSegment(c1, c2, end));
+          lastCtrl = c2;
+          cur = end;
+          cubic = true;
+          break;
+        }
+        case 'A': {
+          float rx, ry, rot, x, y;
+          int large, sweep;
+          if (!Num(rx) || !Num(ry) || !Num(rot) || !Flag(large) || !Flag(sweep) || !Num(x) || !Num(y)) return false;
+          cur = pt(x, y);
+          sink->AddArc(D2D1::ArcSegment(cur, D2D1::SizeF(rx, ry), rot,
+                                        sweep ? D2D1_SWEEP_DIRECTION_CLOCKWISE : D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
+                                        large ? D2D1_ARC_SIZE_LARGE : D2D1_ARC_SIZE_SMALL));
+          break;
+        }
+        case 'Z':
+          if (open) sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+          open = false;
+          cur = start;
+          cmd = 0;
+          break;
+        default: return false;
+      }
+      prevCubic = cubic;
+    }
+    if (open) sink->EndFigure(D2D1_FIGURE_END_OPEN);
+    return true;
+  }
+
+ private:
+  void Skip() {
+    while (*s_ == ' ' || *s_ == ',' || *s_ == '\n' || *s_ == '\t') ++s_;
+  }
+  bool Num(float& out) {
+    Skip();
+    const char* p = s_;
+    if (*p == '-' || *p == '+') ++p;
+    bool digits = false, dot = false;
+    while (std::isdigit(static_cast<unsigned char>(*p)) || (*p == '.' && !dot)) {
+      if (*p == '.') dot = true;
+      else digits = true;
+      ++p;
+    }
+    if (!digits) return false;
+    out = static_cast<float>(std::strtod(std::string(s_, p).c_str(), nullptr));
+    s_ = p;
+    return true;
+  }
+  bool Flag(int& out) {
+    Skip();
+    if (*s_ != '0' && *s_ != '1') return false;
+    out = *s_++ - '0';
+    return true;
+  }
+
+  const char* s_;
+};
+
+}  // namespace
+
+void Context::PathIcon(const char* path, D2D1_RECT_F r, D2D1_COLOR_F c, float strokeDip) {
+  ComPtr<ID2D1Factory> factory;
+  dc_->GetFactory(&factory);
+  if (!roundStroke_) {
+    const D2D1_STROKE_STYLE_PROPERTIES props = D2D1::StrokeStyleProperties(
+        D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND);
+    factory->CreateStrokeStyle(props, nullptr, 0, &roundStroke_);
+  }
+  ID2D1PathGeometry* geometry = nullptr;
+  for (auto& [key, g] : paths_) {
+    if (key == path) geometry = g.Get();
+  }
+  if (!geometry) {
+    ComPtr<ID2D1PathGeometry> g;
+    ComPtr<ID2D1GeometrySink> sink;
+    if (FAILED(factory->CreatePathGeometry(&g)) || FAILED(g->Open(&sink))) return;
+    const bool ok = PathParser(path).Build(sink.Get());
+    if (FAILED(sink->Close()) || !ok) return;
+    paths_.emplace_back(path, g);
+    geometry = g.Get();
+  }
+  const float side = std::min(r.right - r.left, r.bottom - r.top);
+  const float k = side / 24.f;
+  const float ox = (r.left + r.right - side) / 2, oy = (r.top + r.bottom - side) / 2;
+  D2D1_MATRIX_3X2_F old;
+  dc_->GetTransform(&old);
+  dc_->SetTransform(D2D1::Matrix3x2F::Scale(k, k) * D2D1::Matrix3x2F::Translation(ox, oy) * old);
+  dc_->DrawGeometry(geometry, Solid(c), strokeDip / k, roundStroke_.Get());
+  dc_->SetTransform(old);
+}
+
 float Context::Paragraph(std::wstring_view t, D2D1_RECT_F r, Font f, D2D1_COLOR_F c, bool draw) {
   auto layout = Layout(t, f, r.right - r.left, 4000, Align::Left, 0, true);
   if (!layout) return 0;
@@ -318,6 +489,7 @@ float Context::Keycaps(std::wstring_view text, float right, float cy) {
 }
 
 bool Context::Hover(D2D1_RECT_F r) const {
+  if (r.top < captionH_ && clips_.empty()) controls_.push_back(r);
   if (modal_ && !overlay_) return false;
   if (!Inside(r, in_->mouse)) return false;
   return clips_.empty() || Inside(clips_.back(), in_->mouse);
@@ -332,14 +504,18 @@ bool Context::DragArea(Id id, D2D1_RECT_F r) {
   return dragging;
 }
 
-int Context::WheelSteps(D2D1_RECT_F r) {
+void Context::AddWheelZone(D2D1_RECT_F r) {
   D2D1_RECT_F z = r;
   if (!clips_.empty()) {
     const D2D1_RECT_F& c = clips_.back();
     z = Rc(std::max(z.left, c.left), std::max(z.top, c.top), std::min(z.right, c.right), std::min(z.bottom, c.bottom));
   }
   if (z.right > z.left && z.bottom > z.top) wheelZones_.push_back(z);
-  if (!Hover(r) || in_->wheel == 0) return 0;
+}
+
+int Context::WheelSteps(D2D1_RECT_F r) {
+  AddWheelZone(r);
+  if (!Hover(r) || in_->wheel == 0 || !InWheelZone(in_->mouse)) return 0;
   const float notches = std::round(in_->wheel);
   wantRedraw = true;
   return static_cast<int>(notches != 0 ? notches : (in_->wheel > 0 ? 1.f : -1.f));
@@ -501,7 +677,7 @@ bool Context::Slider(Id id, D2D1_RECT_F r, std::wstring_view label, float* value
       z = Rc(std::max(z.left, c.left), std::max(z.top, c.top), std::min(z.right, c.right), std::min(z.bottom, c.bottom));
     }
     if (z.right > z.left && z.bottom > z.top) wheelZones_.push_back(z);
-    if (Hover(r) && in_->wheel != 0 && step > 0) {
+    if (Hover(r) && in_->wheel != 0 && step > 0 && InWheelZone(in_->mouse)) {
       const float notches = std::round(in_->wheel);
       const float n = notches != 0 ? notches : (in_->wheel > 0 ? 1.f : -1.f);
       setValue(mn + std::round((*value + n * step - mn) / step) * step);
@@ -613,6 +789,119 @@ bool Context::Slider(Id id, D2D1_RECT_F r, std::wstring_view label, float* value
   return changed;
 }
 
+bool Context::ValueField(Id id, D2D1_RECT_F row, std::wstring_view label, float* value, float mn, float mx, float step,
+                         int decimals, std::wstring_view unit, bool centered, float labelW, std::wstring_view note) {
+  const D2D1_RECT_F f = Rc(row.left + labelW, row.top, row.right, row.bottom);
+  const float fw = std::max(1.f, f.right - f.left);
+  bool changed = false;
+  const auto setValue = [&](float v, bool snap) {
+    if (snap && step > 0) v = mn + std::round((v - mn) / step) * step;
+    v = std::clamp(v, mn, mx);
+    if (std::fabs(v - *value) > 1e-5f) {
+      *value = v;
+      changed = true;
+      wantRedraw = true;
+    }
+  };
+
+  // Wheel anywhere over the row, one step per notch; the row is kept from scrolling the viewport.
+  // Taken only when the pointer was over a wheel zone last frame: otherwise the viewport scrolls,
+  // and a row arriving under the pointer must not take the same notches.
+  AddWheelZone(row);
+  if (valueEdit_ != id && Hover(row) && in_->wheel != 0 && step > 0 && InWheelZone(in_->mouse)) {
+    const float notches = std::round(in_->wheel);
+    setValue(*value + (notches != 0 ? notches : (in_->wheel > 0 ? 1.f : -1.f)) * step, true);
+  }
+  const bool rowHover = Hover(row);
+  if (labelW > 0) {
+    Text(label, Rc(row.left, row.top, f.left - 8, row.bottom), Font::Small,
+         rowHover || active_ == id ? th_->ink : th_->ink2);
+  }
+
+  // Inline numeric entry.
+  const Id fieldId = id ^ 0x5DEECE66Dull;
+  if (valueEdit_ == id) {
+    valueEditSeen_ = true;
+    const bool escape = focus_ == fieldId && in_->Key(VK_ESCAPE);
+    bool submitted = false;
+    TextField(fieldId, f, &valueText_, {}, 10, &submitted, true);
+    valueText_.erase(std::remove_if(valueText_.begin(), valueText_.end(),
+                                    [](wchar_t c) { return !(iswdigit(c) || c == L'.' || c == L',' || c == L'-'); }),
+                     valueText_.end());
+    if (escape) {
+      valueEdit_ = 0;
+    } else if (submitted || focus_ != fieldId) {
+      std::wstring s = valueText_;
+      std::replace(s.begin(), s.end(), L',', L'.');
+      wchar_t* end = nullptr;
+      const float v = std::wcstof(s.c_str(), &end);
+      if (end && end != s.c_str()) {
+        const float p = std::pow(10.f, static_cast<float>(decimals));
+        setValue(std::round(v * p) / p, false);
+      }
+      valueEdit_ = 0;
+    }
+    if (valueEdit_ == id) return changed;
+  }
+
+  // Horizontal drag, relative to the press; a press released without moving opens entry.
+  const bool hover = Hover(f);
+  if (hover) cursor = Cursor::SizeWE;
+  if (hover && in_->pressed) {
+    active_ = id;
+    dragX_ = in_->mouse.x;
+    dragV_ = *value;
+    dragMoved_ = false;
+  }
+  const bool held = active_ == id && (in_->down || in_->pressed);
+  if (held) {
+    constexpr float kSlop = 3;
+    const float dx = in_->mouse.x - dragX_;
+    if (!dragMoved_ && std::fabs(dx) >= kSlop) dragMoved_ = true;
+    if (dragMoved_) {
+      const float travel = dx > 0 ? dx - kSlop : dx + kSlop;
+      setValue(dragV_ + travel / fw * (mx - mn), true);
+      cursor = Cursor::SizeWE;
+    }
+    wantRedraw = true;
+  }
+  if (active_ == id && in_->released && !dragMoved_ && hover) {
+    wchar_t buf[32];
+    swprintf_s(buf, L"%.*f", decimals, *value);
+    valueText_ = buf;
+    valueEdit_ = id;
+    valueEditSeen_ = true;
+    SetFocus(fieldId);
+  }
+
+  // Field, value fill (from the left, or from the middle when centred) and a thin marker at the value.
+  const bool live = hover || held;
+  FillRound(f, kRadiusCtl, th_->field);
+  if (hover && !held) FillRound(f, kRadiusCtl, th_->sel);
+  const float t = std::clamp((*value - mn) / std::max(1e-6f, mx - mn), 0.f, 1.f);
+  const float kx = f.left + t * fw, mid = f.left + fw / 2;
+  const float a0 = centered ? std::min(mid, kx) : f.left, a1 = centered ? std::max(mid, kx) : kx;
+  const D2D1_COLOR_F fillInk = WithAlpha(th_->acc, th_->dark ? (live ? 0.26f : 0.18f) : (live ? 0.22f : 0.15f));
+  if (a1 - a0 > 0.5f) {
+    PushClip(Rc(a0, f.top, a1, f.bottom));
+    FillRound(f, kRadiusCtl, fillInk);
+    PopClip();
+  }
+  if (centered || t > 0) {
+    const float mx0 = std::clamp(kx, f.left + 3, f.right - 3);
+    FillRound(Rc(mx0 - 1, f.top + 6, mx0 + 1, f.bottom - 6), 1, WithAlpha(th_->acc, live ? 1.f : 0.8f));
+  }
+  wchar_t buf[48];
+  swprintf_s(buf, L"%.*f%.*s", decimals, *value, static_cast<int>(unit.size()), unit.data());
+  const float vw = std::ceil(Measure(buf, Font::Mono)) + 2;
+  Text(buf, Rc(f.right - 10 - vw, f.top, f.right - 10, f.bottom), Font::Mono, th_->ink, Align::Right);
+  if (!note.empty()) {
+    const float nw = std::ceil(Measure(note, Font::Small)) + 2;
+    Text(note, Rc(f.right - 10 - vw - 6 - nw, f.top, f.right - 10 - vw - 6, f.bottom), Font::Small, th_->ink3, Align::Right);
+  }
+  return changed;
+}
+
 bool Context::Swatch(Id id, D2D1_RECT_F r, D2D1_COLOR_F c, bool selected) {
   const bool hover = Hover(Rc(r.left - 2, r.top - 2, r.right + 2, r.bottom + 2));
   const bool clicked = ClickArea(id, Rc(r.left - 2, r.top - 2, r.right + 2, r.bottom + 2));
@@ -625,7 +914,7 @@ bool Context::Swatch(Id id, D2D1_RECT_F r, D2D1_COLOR_F c, bool selected) {
 }
 
 bool Context::TextField(Id id, D2D1_RECT_F r, std::wstring* text, std::wstring_view placeholder, size_t maxLen,
-                        bool* submitted, bool mono, wchar_t glyph, float padRight) {
+                        bool* submitted, bool mono, wchar_t glyph, float padRight, float padLeft) {
   const bool hover = Hover(r);
   if (hover) cursor = Cursor::IBeam;
   if (hover && in_->pressed) {
@@ -669,7 +958,7 @@ bool Context::TextField(Id id, D2D1_RECT_F r, std::wstring* text, std::wstring_v
   if (focused) StrokeRound(r, kRadiusCtl, th_->acc, 1.5f);
   const Font f = mono ? Font::Mono : Font::Body;
   if (glyph) Glyph(glyph, Rc(r.left + 10, r.top, r.left + 26, r.bottom), focused ? th_->acc : th_->ink3);
-  const D2D1_RECT_F inner = Rc(r.left + (glyph ? 34.f : 10.f), r.top, r.right - 10 - padRight, r.bottom);
+  const D2D1_RECT_F inner = Rc(r.left + (glyph ? 34.f : 10.f) + padLeft, r.top, r.right - 10 - padRight, r.bottom);
   PushClip(inner);
   float shift = 0;
   if (text->empty()) {

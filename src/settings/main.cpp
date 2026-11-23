@@ -5,11 +5,18 @@
 #include "settings/app.h"
 
 #include <dwmapi.h>
+#include <shellapi.h>
+#include <shlobj.h>
 #include <shobjidl.h>
+#include <tlhelp32.h>
+#include <wincodec.h>
 #include <windowsx.h>
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_set>
+
+#pragma comment(lib, "version.lib")
 
 namespace sl {
 
@@ -52,6 +59,101 @@ std::wstring PickJsonFile(HWND owner, bool save) {
   return out;
 }
 
+// Modal shell file dialog filtered to *.exe. Returns the lowercase file name, or empty when cancelled.
+std::wstring PickExeFile(HWND owner) {
+  ComPtr<IFileOpenDialog> dlg;
+  if (FAILED(CoCreateInstance(__uuidof(FileOpenDialog), nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) return {};
+  const COMDLG_FILTERSPEC spec[] = {{T("dlg.exeFilter"), L"*.exe"}};
+  dlg->SetFileTypes(1, spec);
+  dlg->SetTitle(T("dlg.pickExe"));
+  FILEOPENDIALOGOPTIONS opts = 0;
+  if (SUCCEEDED(dlg->GetOptions(&opts))) dlg->SetOptions(opts | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+  if (FAILED(dlg->Show(owner))) return {};
+  ComPtr<IShellItem> item;
+  if (FAILED(dlg->GetResult(&item))) return {};
+  PWSTR path = nullptr;
+  if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) || !path) return {};
+  std::wstring out = Lower(FileNameOf(path));
+  CoTaskMemFree(path);
+  return out;
+}
+
+std::wstring ImagePath(DWORD pid) {
+  std::wstring out;
+  if (HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)) {
+    wchar_t buf[MAX_PATH * 2];
+    DWORD n = static_cast<DWORD>(std::size(buf));
+    if (QueryFullProcessImageNameW(h, 0, buf, &n)) out.assign(buf, n);
+    CloseHandle(h);
+  }
+  return out;
+}
+
+// FileDescription from the version resource, in the file's first listed language.
+std::wstring FileDescription(const std::wstring& path) {
+  DWORD dummy = 0;
+  const DWORD size = GetFileVersionInfoSizeW(path.c_str(), &dummy);
+  if (size == 0) return {};
+  std::vector<BYTE> data(size);
+  if (!GetFileVersionInfoW(path.c_str(), 0, size, data.data())) return {};
+  struct LangCp {
+    WORD lang, cp;
+  };
+  LangCp* tr = nullptr;
+  UINT len = 0;
+  if (!VerQueryValueW(data.data(), L"\\VarFileInfo\\Translation", reinterpret_cast<void**>(&tr), &len) ||
+      len < sizeof(LangCp)) {
+    return {};
+  }
+  wchar_t key[64];
+  swprintf_s(key, L"\\StringFileInfo\\%04x%04x\\FileDescription", tr->lang, tr->cp);
+  wchar_t* text = nullptr;
+  if (!VerQueryValueW(data.data(), key, reinterpret_cast<void**>(&text), &len) || !text || len == 0) return {};
+  std::wstring out(text);
+  while (!out.empty() && iswspace(out.back())) out.pop_back();
+  return out;
+}
+
+// Shell, session and service processes nobody adds to a game list.
+bool SystemNoise(const std::wstring& exe) {
+  static const std::unordered_set<std::wstring> kNoise = {
+      L"system", L"registry", L"idle", L"secure system", L"memory compression", L"smss.exe", L"csrss.exe",
+      L"wininit.exe", L"winlogon.exe", L"services.exe", L"lsass.exe", L"lsaiso.exe", L"svchost.exe", L"dwm.exe",
+      L"fontdrvhost.exe", L"sihost.exe", L"taskhostw.exe", L"ctfmon.exe", L"conhost.exe", L"runtimebroker.exe",
+      L"searchhost.exe", L"searchindexer.exe", L"searchprotocolhost.exe", L"searchfilterhost.exe",
+      L"startmenuexperiencehost.exe", L"shellexperiencehost.exe", L"shellhost.exe", L"textinputhost.exe",
+      L"applicationframehost.exe", L"dllhost.exe", L"wmiprvse.exe", L"spoolsv.exe", L"audiodg.exe", L"msmpeng.exe",
+      L"nissrv.exe", L"securityhealthservice.exe", L"securityhealthsystray.exe", L"sgrmbroker.exe", L"wudfhost.exe",
+      L"dashost.exe", L"smartscreen.exe", L"backgroundtaskhost.exe", L"useroobebroker.exe", L"lockapp.exe",
+      L"widgets.exe", L"widgetservice.exe", L"explorer.exe", L"systemsettingsbroker.exe", L"crossdeviceresume.exe",
+      L"phoneexperiencehost.exe", L"gamebar.exe", L"gamebarftserver.exe", L"msedgewebview2.exe",
+      L"mpdefendercoreservice.exe", L"unsecapp.exe", L"wlanext.exe", L"dataexchangehost.exe", ipc::kCoreExe,
+      ipc::kSettingsExe};
+  return kNoise.count(exe) != 0;
+}
+
+// Invisible resize border of a sizable window, in physical pixels.
+int ResizeBorder(UINT dpi) {
+  return GetSystemMetricsForDpi(SM_CYFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+}
+
+LPCWSTR CursorId(ui::Cursor c) {
+  switch (c) {
+    case ui::Cursor::Hand: return IDC_HAND;
+    case ui::Cursor::IBeam: return IDC_IBEAM;
+    case ui::Cursor::SizeWE: return IDC_SIZEWE;
+    default: return IDC_ARROW;
+  }
+}
+
+bool UnderWindowsDir(const std::wstring& path) {
+  wchar_t win[MAX_PATH];
+  const UINT n = GetWindowsDirectoryW(win, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH) return false;
+  const std::wstring dir = Lower(std::wstring(win, n)) + L"\\";
+  return Lower(path).rfind(dir, 0) == 0;
+}
+
 // Small sample layer per shape for the editor's shape picker icons.
 Layer SampleLayer(Shape s) {
   Layer l;
@@ -79,6 +181,8 @@ Layer SampleLayer(Shape s) {
 int SettingsApp::Run(HINSTANCE hinst, int show) {
   g_app = this;
   hinst_ = hinst;
+  RemoveUpdateLeftovers();
+  appVersion_ = update::CurrentVersion();
   LoadConfig(cfg_);
   SetLanguage(cfg_.settings.language);
   if (!CoreOnline()) LaunchCore();
@@ -91,15 +195,15 @@ int SettingsApp::Run(HINSTANCE hinst, int show) {
   wc.lpszClassName = ipc::kSettingsClass;
   RegisterClassExW(&wc);
 
-  // Default client area 1280x820 DIP, clamped to the work area.
+  // Default client area 1280x820 DIP, clamped to the work area. The caption is part of the client
+  // area (WM_NCCALCSIZE), so only the side and bottom resize borders are added.
   const UINT sysDpi = GetDpiForSystem();
   const float s = sysDpi / 96.f;
-  RECT frame{0, 0, static_cast<LONG>(1280 * s), static_cast<LONG>(820 * s)};
-  AdjustWindowRectExForDpi(&frame, WS_OVERLAPPEDWINDOW, FALSE, 0, sysDpi);
+  const int border = ResizeBorder(sysDpi);
   RECT wa{};
   SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
-  const int w = std::min<int>(frame.right - frame.left, wa.right - wa.left);
-  const int h = std::min<int>(frame.bottom - frame.top, wa.bottom - wa.top);
+  const int w = std::min<int>(static_cast<int>(1280 * s) + 2 * border, wa.right - wa.left);
+  const int h = std::min<int>(static_cast<int>(820 * s) + border, wa.bottom - wa.top);
   const int x = wa.left + std::max(0, static_cast<int>((wa.right - wa.left - w) / 2));
   const int y = wa.top + std::max(0, static_cast<int>((wa.bottom - wa.top - h) / 2));
   hwnd_ = CreateWindowExW(0, ipc::kSettingsClass, L"Sightline", WS_OVERLAPPEDWINDOW, x, y, w, h, nullptr, nullptr, hinst,
@@ -124,6 +228,8 @@ int SettingsApp::Run(HINSTANCE hinst, int show) {
   }
 
   dpi_ = static_cast<float>(GetDpiForWindow(hwnd_));
+  // Recompute the frame with the caption folded into the client area.
+  SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
   if (!CreateDevice()) {
     MessageBoxW(hwnd_, L"Sightline: Direct2D initialisation failed.", L"Sightline", MB_ICONERROR);
     return 2;
@@ -230,6 +336,7 @@ bool SettingsApp::RasterizeInto(Preview& p, const Crosshair& c) {
   }
   p.bitmap = bmp;
   p.size = img.width;
+  p.even = CrosshairEvenCenter(c);
   p.fingerprint = std::move(fp);
   return true;
 }
@@ -268,7 +375,7 @@ int SettingsApp::DrawPreview(const Crosshair& c, D2D1_RECT_F box, float maxZoom,
 // The crosshair is magnified by an integer factor of device pixels with nearest-neighbour sampling,
 // so every in-game pixel stays visible and sharp.
 int SettingsApp::DrawBitmap(const Preview* p, D2D1_RECT_F box, float maxZoom, int backdrop, bool grid, float fit,
-                            float radius) {
+                            float radius, bool rulers) {
   const auto& t = ui_.th();
   const float w = box.right - box.left, h = box.bottom - box.top;
   if (backdrop == 2) ui_.FillRound(box, radius, D2D1::ColorF(0.80f, 0.80f, 0.79f));
@@ -294,9 +401,79 @@ int SettingsApp::DrawBitmap(const Preview* p, D2D1_RECT_F box, float maxZoom, in
     for (float x = x0; x < g.right; x += cell) ui_.VLine(x, g.top, g.bottom, hair);
     for (float y = y0; y < g.bottom; y += cell) ui_.HLine(g.left, g.right, y, hair);
   }
+  if (rulers) DrawRulers(p, box, dst, zoom, backdrop, radius);
   dc_->DrawBitmap(p->bitmap.Get(), &dst, 1.f, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, nullptr, nullptr);
   ui_.PopClip();
   return static_cast<int>(zoom);
+}
+
+// Centre axes through the crosshair's pivot and offset labels (in crosshair pixels, +x right, +y down)
+// along all four edges. Drawn under the crosshair; label spacing follows the zoom.
+void SettingsApp::DrawRulers(const Preview* p, D2D1_RECT_F box, D2D1_RECT_F dst, float zoom, int backdrop,
+                             float radius) {
+  const float cell = zoom / Scale();  // one crosshair pixel in DIPs
+  const float pivot = static_cast<float>(p->size / 2) + (p->even ? 0.f : 0.5f);
+  const float cx = dst.left + pivot * cell, cy = dst.top + pivot * cell;
+  const bool light = backdrop == 2;
+  const auto ink = [&](float a) { return light ? D2D1::ColorF(0, 0, 0, a) : D2D1::ColorF(1, 1, 1, a); };
+  ui_.VLine(cx, box.top, box.bottom, ink(0.09f));
+  ui_.HLine(box.left, box.right, cy, ink(0.09f));
+
+  float step = 100;
+  for (const float s : {1.f, 2.f, 5.f, 10.f, 20.f, 25.f, 50.f, 100.f}) {
+    if (s * cell >= 36) {
+      step = s;
+      break;
+    }
+  }
+  const float span = step * cell;
+  const float margin = radius + 16;  // corners stay clear so the four rulers never meet
+  const int kx = static_cast<int>((box.right - box.left) / span) + 1;
+  const int ky = static_cast<int>((box.bottom - box.top) / span) + 1;
+  for (int k = -kx; k <= kx; ++k) {
+    const float x = cx + k * span;
+    if (x < box.left + margin || x > box.right - margin) continue;
+    const std::wstring s = std::to_wstring(static_cast<int>(k * step));
+    const float tick = k == 0 ? 6.f : 3.f;
+    const D2D1_COLOR_F text = ink(k == 0 ? 0.62f : 0.36f);
+    ui_.VLine(x, box.top, box.top + tick, ink(0.28f));
+    ui_.VLine(x, box.bottom - tick, box.bottom, ink(0.28f));
+    ui_.Text(s, ui::Rc(x - 20, box.top + 6, x + 20, box.top + 18), ui::Font::Label, text, ui::Align::Center);
+    ui_.Text(s, ui::Rc(x - 20, box.bottom - 18, x + 20, box.bottom - 6), ui::Font::Label, text, ui::Align::Center);
+  }
+  for (int k = -ky; k <= ky; ++k) {
+    const float y = cy + k * span;
+    if (y < box.top + margin || y > box.bottom - margin) continue;
+    const std::wstring s = std::to_wstring(static_cast<int>(k * step));
+    const float tick = k == 0 ? 6.f : 3.f;
+    const D2D1_COLOR_F text = ink(k == 0 ? 0.62f : 0.36f);
+    ui_.HLine(box.left, box.left + tick, y, ink(0.28f));
+    ui_.HLine(box.right - tick, box.right, y, ink(0.28f));
+    ui_.Text(s, ui::Rc(box.left + 9, y - 7, box.left + 49, y + 7), ui::Font::Label, text);
+    ui_.Text(s, ui::Rc(box.right - 49, y - 7, box.right - 9, y + 7), ui::Font::Label, text, ui::Align::Right);
+  }
+}
+
+ComPtr<ID2D1Bitmap1> SettingsApp::ExeIcon(const std::wstring& path, float sizeDip) {
+  const int px = std::max(16, static_cast<int>(std::lround(sizeDip * Scale())));
+  HICON icon = nullptr;
+  if (FAILED(SHDefExtractIconW(path.c_str(), 0, 0, &icon, nullptr, MAKELONG(px, px))) || !icon) {
+    SHFILEINFOW sfi{};
+    if (SHGetFileInfoW(path.c_str(), 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_LARGEICON)) icon = sfi.hIcon;
+  }
+  if (!icon) return nullptr;
+  ComPtr<ID2D1Bitmap1> out;
+  ComPtr<IWICImagingFactory> wic;
+  ComPtr<IWICBitmap> src;
+  ComPtr<IWICFormatConverter> conv;
+  if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))) &&
+      SUCCEEDED(wic->CreateBitmapFromHICON(icon, &src)) && SUCCEEDED(wic->CreateFormatConverter(&conv)) &&
+      SUCCEEDED(conv->Initialize(src.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0,
+                                 WICBitmapPaletteTypeMedianCut))) {
+    dc_->CreateBitmapFromWicBitmap(conv.Get(), nullptr, &out);
+  }
+  DestroyIcon(icon);
+  return out;
 }
 
 void SettingsApp::ApplyTheme() {
@@ -415,10 +592,16 @@ void SettingsApp::Frame() {
     RunFileAction(a);
     ui_.wantRedraw = true;
   }
+  if (pendingBrowse_ != PickTarget::None) {
+    const PickTarget target = pendingBrowse_;
+    pendingBrowse_ = PickTarget::None;
+    const std::wstring exe = PickExeFile(hwnd_);
+    if (!exe.empty() && !AddExeTo(target, exe)) Toast(T("toast.exeExists"));
+    ui_.wantRedraw = true;
+  }
   if (ui_.wantRedraw) Invalidate();
-  SetCursor(LoadCursorW(nullptr, ui_.cursor == ui::Cursor::Hand    ? IDC_HAND
-                                 : ui_.cursor == ui::Cursor::IBeam ? IDC_IBEAM
-                                                                   : IDC_ARROW));
+  // Outside the client area (caption buttons, resize borders) the system cursor stays.
+  if (in_.mouse.x > -1000) SetCursor(LoadCursorW(nullptr, CursorId(ui_.cursor)));
   if (ui_.AnyFocus()) SetTimer(hwnd_, kTimerCaret, 530, nullptr);
   else KillTimer(hwnd_, kTimerCaret);
 }
@@ -571,28 +754,65 @@ void SettingsApp::LaunchCore() {
   }
 }
 
-std::vector<std::wstring> SettingsApp::RunningApps() const {
-  struct Ctx {
-    std::vector<std::wstring> out;
-  } ctx;
+std::vector<RunningApp> SettingsApp::RunningApps() const {
+  std::vector<RunningApp> out;
+  std::unordered_set<std::wstring> seen;
+
+  // Visible, unowned, uncloaked top-level windows with a title: the applications a user sees.
+  struct Win {
+    DWORD pid;
+    std::wstring title;
+  };
+  std::vector<Win> wins;
   EnumWindows(
       [](HWND w, LPARAM lp) -> BOOL {
-        auto* c = reinterpret_cast<Ctx*>(lp);
         if (!IsWindowVisible(w) || GetWindow(w, GW_OWNER) || (GetWindowLongW(w, GWL_EXSTYLE) & WS_EX_TOOLWINDOW)) return TRUE;
         BOOL cloaked = FALSE;
         DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof(cloaked));
-        if (cloaked || GetWindowTextLengthW(w) == 0) return TRUE;
-        std::wstring exe = WindowExeName(w);
-        if (exe.empty() || exe == L"explorer.exe" || exe == ipc::kSettingsExe || exe == ipc::kCoreExe ||
-            exe == L"textinputhost.exe" || exe == L"applicationframehost.exe") {
-          return TRUE;
-        }
-        if (std::find(c->out.begin(), c->out.end(), exe) == c->out.end()) c->out.push_back(exe);
+        const int len = GetWindowTextLengthW(w);
+        if (cloaked || len == 0) return TRUE;
+        Win win{};
+        GetWindowThreadProcessId(w, &win.pid);
+        win.title.resize(static_cast<size_t>(len) + 1);
+        win.title.resize(static_cast<size_t>(GetWindowTextW(w, win.title.data(), len + 1)));
+        reinterpret_cast<std::vector<Win>*>(lp)->push_back(std::move(win));
         return TRUE;
       },
-      reinterpret_cast<LPARAM>(&ctx));
-  std::sort(ctx.out.begin(), ctx.out.end());
-  return ctx.out;
+      reinterpret_cast<LPARAM>(&wins));
+  for (const Win& w : wins) {
+    RunningApp a;
+    a.path = ImagePath(w.pid);
+    a.exe = Lower(FileNameOf(a.path));
+    if (a.exe.empty() || SystemNoise(a.exe) || !seen.insert(a.exe).second) continue;
+    a.windowed = true;
+    a.name = FileDescription(a.path);
+    if (a.name.empty()) a.name = w.title;
+    out.push_back(std::move(a));
+  }
+
+  // Everything else that can be queried, minus Windows' own background components.
+  if (HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0); snap != INVALID_HANDLE_VALUE) {
+    PROCESSENTRY32W pe{sizeof(pe)};
+    for (BOOL ok = Process32FirstW(snap, &pe); ok; ok = Process32NextW(snap, &pe)) {
+      const std::wstring exe = Lower(pe.szExeFile);
+      if (exe.empty() || SystemNoise(exe) || seen.count(exe)) continue;
+      RunningApp a;
+      a.path = ImagePath(pe.th32ProcessID);
+      if (a.path.empty() || UnderWindowsDir(a.path)) continue;
+      seen.insert(exe);
+      a.exe = exe;
+      a.name = FileDescription(a.path);
+      if (a.name.empty()) a.name = exe;
+      out.push_back(std::move(a));
+    }
+    CloseHandle(snap);
+  }
+
+  std::stable_sort(out.begin(), out.end(), [](const RunningApp& a, const RunningApp& b) {
+    if (a.windowed != b.windowed) return a.windowed;
+    return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
+  });
+  return out;
 }
 
 LRESULT CALLBACK SettingsApp::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -628,21 +848,92 @@ LRESULT SettingsApp::Handle(UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_GETMINMAXINFO: {
       auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
-      // Minimum client area 1080x700 DIP.
-      RECT r{0, 0, static_cast<LONG>(1080 * Scale()), static_cast<LONG>(700 * Scale())};
-      AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, static_cast<UINT>(dpi_));
-      mmi->ptMinTrackSize = {r.right - r.left, r.bottom - r.top};
+      // Minimum client area 1080x700 DIP; the caption is inside it.
+      const int b = ResizeBorder(static_cast<UINT>(dpi_));
+      mmi->ptMinTrackSize = {static_cast<LONG>(1080 * Scale()) + 2 * b, static_cast<LONG>(700 * Scale()) + b};
       return 0;
     }
+    case WM_NCCALCSIZE:
+      if (wp) {
+        // Client area takes the caption; side and bottom resize borders stay non-client. A maximised
+        // window hangs over the monitor edge by the border width, so its top is pulled back in.
+        auto* p = reinterpret_cast<NCCALCSIZE_PARAMS*>(lp);
+        const LONG top = p->rgrc[0].top;
+        DefWindowProcW(hwnd_, msg, wp, lp);
+        p->rgrc[0].top = top;
+        if (IsZoomed(hwnd_)) p->rgrc[0].top += ResizeBorder(GetDpiForWindow(hwnd_));
+        return 0;
+      }
+      break;
+    case WM_NCHITTEST: {
+      const LRESULT hit = DefWindowProcW(hwnd_, msg, wp, lp);
+      if (hit != HTCLIENT) return hit;
+      POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+      ScreenToClient(hwnd_, &pt);
+      if (!IsZoomed(hwnd_)) {
+        // The top resize border lives inside the client area now.
+        const int b = ResizeBorder(GetDpiForWindow(hwnd_));
+        if (pt.y < b) {
+          RECT rc;
+          GetClientRect(hwnd_, &rc);
+          if (pt.x < 2 * b) return HTTOPLEFT;
+          if (pt.x >= rc.right - 2 * b) return HTTOPRIGHT;
+          return HTTOP;
+        }
+      }
+      return CaptionHit(pt.x / Scale(), pt.y / Scale());
+    }
+    case WM_NCMOUSEMOVE: {
+      const LRESULT h = wp == HTMINBUTTON || wp == HTMAXBUTTON || wp == HTCLOSE ? static_cast<LRESULT>(wp) : 0;
+      if (h != capHover_ || in_.mouse.x > -1000) {
+        capHover_ = h;
+        in_.mouse = D2D1::Point2F(-1000, -1000);  // the client area lost the pointer
+        Invalidate();
+      }
+      TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE | TME_NONCLIENT, hwnd_, 0};
+      TrackMouseEvent(&tme);
+      break;
+    }
+    case WM_NCMOUSELEAVE:
+      if (capHover_ || capPressed_) {
+        capHover_ = capPressed_ = 0;
+        Invalidate();
+      }
+      break;
+    case WM_NCLBUTTONDOWN:
+    case WM_NCLBUTTONDBLCLK:
+      // Caption buttons are drawn by the app; the default handler would run its own button tracking.
+      if (wp == HTMINBUTTON || wp == HTMAXBUTTON || wp == HTCLOSE) {
+        capPressed_ = static_cast<LRESULT>(wp);
+        Invalidate();
+        return 0;
+      }
+      break;
+    case WM_NCLBUTTONUP:
+      if (wp == HTMINBUTTON || wp == HTMAXBUTTON || wp == HTCLOSE) {
+        const bool fire = capPressed_ == static_cast<LRESULT>(wp);
+        capPressed_ = 0;
+        Invalidate();
+        if (fire && wp == HTMINBUTTON) ShowWindow(hwnd_, SW_MINIMIZE);
+        else if (fire && wp == HTMAXBUTTON) ShowWindow(hwnd_, IsZoomed(hwnd_) ? SW_RESTORE : SW_MAXIMIZE);
+        else if (fire) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+        return 0;
+      }
+      break;
+    case WM_ACTIVATE:
+      Invalidate();  // caption buttons dim while inactive
+      break;
     case WM_SETCURSOR:
       if (LOWORD(lp) == HTCLIENT) {
-        SetCursor(LoadCursorW(nullptr, ui_.cursor == ui::Cursor::Hand    ? IDC_HAND
-                                       : ui_.cursor == ui::Cursor::IBeam ? IDC_IBEAM
-                                                                         : IDC_ARROW));
+        SetCursor(LoadCursorW(nullptr, CursorId(ui_.cursor)));
         return TRUE;
       }
       break;
     case WM_MOUSEMOVE: {
+      if (capHover_) {
+        capHover_ = 0;
+        capPressed_ = 0;
+      }
       mousePos();
       TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd_, 0};
       TrackMouseEvent(&tme);
@@ -681,11 +972,18 @@ LRESULT SettingsApp::Handle(UINT msg, WPARAM wp, LPARAM lp) {
       in_.rightClick = true;
       Invalidate();
       return 0;
-    case WM_MOUSEWHEEL:
+    case WM_MOUSEWHEEL: {
+      // The wheel acts where the pointer is (screen coordinates in lParam).
+      POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+      ScreenToClient(hwnd_, &pt);
+      RECT rc;
+      GetClientRect(hwnd_, &rc);
+      if (PtInRect(&rc, pt)) in_.mouse = D2D1::Point2F(pt.x / Scale(), pt.y / Scale());
       in_.wheel += GET_WHEEL_DELTA_WPARAM(wp) / static_cast<float>(WHEEL_DELTA);
       lastWheel_ = GetTickCount64();
       Invalidate();
       return 0;
+    }
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
       if (HandleCaptureKey(msg, wp)) return 0;
@@ -738,6 +1036,9 @@ LRESULT SettingsApp::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         else ApplyTheme();
       }
       break;
+    case kMsgUpdate:
+      OnUpdateResult(wp, lp);
+      return 0;
     case ipc::kMsgActivate:
       if (IsIconic(hwnd_)) ShowWindow(hwnd_, SW_RESTORE);
       SetForegroundWindow(hwnd_);
@@ -760,9 +1061,17 @@ LRESULT SettingsApp::Handle(UINT msg, WPARAM wp, LPARAM lp) {
 
 }  // namespace sl
 
-int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int show) {
+int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR cmdLine, int show) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   HANDLE mutex = CreateMutexW(nullptr, TRUE, sl::ipc::kSettingsMutex);
+  // After an update the previous settings process is still closing: wait for it to release the
+  // instance mutex instead of activating its window.
+  const bool afterUpdate = cmdLine && wcsstr(cmdLine, L"--after-update") != nullptr;
+  if (GetLastError() == ERROR_ALREADY_EXISTS && afterUpdate && mutex) {
+    const DWORD r = WaitForSingleObject(mutex, 15000);
+    if (r == WAIT_OBJECT_0 || r == WAIT_ABANDONED) SetLastError(ERROR_SUCCESS);
+    else SetLastError(ERROR_ALREADY_EXISTS);
+  }
   if (GetLastError() == ERROR_ALREADY_EXISTS) {
     if (HWND w = sl::ipc::SettingsWindow()) {
       if (IsIconic(w)) ShowWindow(w, SW_RESTORE);

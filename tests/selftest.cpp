@@ -2,6 +2,7 @@
 // Usage: selftest.exe <output.bmp> [code ...]
 
 #include "common/crosshair_render.h"
+#include "common/i18n.h"
 #include "common/model.h"
 
 #include <cstdio>
@@ -110,9 +111,33 @@ int wmain(int argc, wchar_t** argv) {
   mixed("mix t2 + dot3", {cross2, dot3});
   mixed("mix t1 + plus2", {thin, plus2});
   mixed("mix ring + dot2", {ring, dot2});
+  // Blur: soft outline (glow), soft fill, both at once on a mixed-parity pair.
+  Layer glow = thin;
+  glow.outlineBlur = 3;
+  Layer softDot = dot2;
+  softDot.blur = 1.5f;
+  Layer softAll = cross2;
+  softAll.blur = 8;
+  softAll.outlineBlur = 8;
+  mixed("blur outline", {glow});
+  mixed("blur t1 + dot2", {glow, softDot});
+  mixed("blur max", {softAll});
+  // Zero-length rays (old configs, imports) must still draw at least 1 px.
+  Layer zero = cross2;
+  zero.length = 0;
+  mixed("zero length", {zero});
+  int clipped = 0, empty = 0;
   for (const auto& p : cases) {
     const Image img = RasterizeCrosshair(p);
     const auto alpha = [&](int x, int y) { return static_cast<int>(img.pixels[static_cast<size_t>(y) * img.width + x] >> 24); };
+    // The surface must leave a transparent border, otherwise the extent estimate cut something off.
+    for (int i = 0; i < img.width; ++i) {
+      if (alpha(i, 0) || alpha(i, img.height - 1) || alpha(0, i) || alpha(img.width - 1, i)) {
+        ++clipped;
+        printf("  %-18s CLIPPED\n", p.name.c_str());
+        break;
+      }
+    }
     int x0 = img.width, y0 = img.height, x1 = -1, y1 = -1;
     for (int y = 0; y < img.height; ++y) {
       for (int x = 0; x < img.width; ++x) {
@@ -123,6 +148,11 @@ int wmain(int argc, wchar_t** argv) {
           y1 = std::max(y1, y);
         }
       }
+    }
+    if (x1 < 0) {
+      ++empty;
+      printf("  %-18s EMPTY\n", p.name.c_str());
+      continue;
     }
     int dh = 0, dv = 0;
     for (int y = y0; y <= y1; ++y) {
@@ -140,7 +170,7 @@ int wmain(int argc, wchar_t** argv) {
     if (!ok) ++crooked;
     printf("  %-18s %s  h=%3d v=%3d\n", p.name.c_str(), ok ? "ok     " : "CROOKED", dh, dv);
   }
-  printf("crooked presets: %d\n", crooked);
+  printf("crooked presets: %d\n", crooked + clipped + empty);
 
   // Config round trip: a favourited preset is stored as metadata, an edited one as a full copy,
   // and share codes never carry the sender's hotkey.
@@ -160,6 +190,18 @@ int wmain(int argc, wchar_t** argv) {
     Crosshair decoded;
     const bool codeOk = DecodeShareCode(EncodeShareCode(*f), decoded) && !decoded.hotkey.Valid() && !decoded.favorite;
     printf("config round trip: parsed=%d meta=%d edited=%d sharecode=%d\n", parsed, metaOk, editOk, codeOk);
+  }
+
+  // Every language must translate every key and keep the printf specifiers of the English text.
+  {
+    int gaps = 0;
+    for (const LanguageInfo& l : Languages()) {
+      int badFormat = 0;
+      const int missing = MissingTranslations(l.code, &badFormat);
+      if (missing || badFormat) printf("  i18n %-2s missing=%d badFormat=%d\n", l.code, missing, badFormat);
+      gaps += missing + badFormat;
+    }
+    printf("i18n gaps: %d\n", gaps);
   }
 
   // Redraw cost: one rasterisation happens per crosshair change (never per frame).

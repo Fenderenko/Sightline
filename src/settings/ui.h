@@ -52,7 +52,7 @@ enum class Font {
   Count
 };
 enum class Align { Left, Center, Right };
-enum class Cursor { Arrow, Hand, IBeam };
+enum class Cursor { Arrow, Hand, IBeam, SizeWE };
 // Primary: filled accent. Secondary: quiet tonal fill. Small: tonal, small text. Ghost: text only, tonal on hover.
 enum class Btn { Secondary, Primary, Small, Ghost };
 
@@ -64,7 +64,9 @@ inline constexpr wchar_t Add = 0xE710, Edit = 0xE70F, Copy = 0xE8C8, Star = 0xE7
                          Down = 0xE74B, Remove = 0xE738, Code = 0xE943, Folder = 0xE838, Reset = 0xE7A7,
                          Library = 0xE8F1, Keyboard = 0xE765, Game = 0xE7FC, Shield = 0xEA18, Settings = 0xE713,
                          Warning = 0xE7BA, Delete = 0xE74D, Search = 0xE721, More = 0xE712, Undo = 0xE7A7,
-                         Redo = 0xE7A6, Save = 0xE74E, Check = 0xE73E;
+                         Redo = 0xE7A6, Save = 0xE74E, Check = 0xE73E, Paste = 0xE77F, Brush = 0xE771,
+                         Duplicate = 0xF5ED, Apps = 0xF0E2, Minimize = 0xE921, Maximize = 0xE922, Restore = 0xE923,
+                         ChromeClose = 0xE8BB, Logs = 0xE9F9;
 }
 
 inline D2D1_RECT_F Rc(float l, float t, float r, float b) { return D2D1::RectF(l, t, r, b); }
@@ -123,6 +125,9 @@ class Context {
   void Text(std::wstring_view t, D2D1_RECT_F r, Font f, D2D1_COLOR_F c, Align a = Align::Left, float spacing = 0);
   void Label(std::wstring_view t, D2D1_RECT_F r, D2D1_COLOR_F c, Align a = Align::Left);  // mono caps
   void Glyph(wchar_t g, D2D1_RECT_F r, D2D1_COLOR_F c, bool large = false);
+  // Stroked line icon from SVG path data on a 24-unit grid (round caps and joins), fitted into r.
+  // Supports M L H V C S A Z in both cases. `path` must be a string literal: geometry is cached by pointer.
+  void PathIcon(const char* path, D2D1_RECT_F r, D2D1_COLOR_F c, float strokeDip = 1.6f);
   float Paragraph(std::wstring_view t, D2D1_RECT_F r, Font f, D2D1_COLOR_F c, bool draw = true);
   float Measure(std::wstring_view t, Font f, float spacing = 0);
   float MeasureLabel(std::wstring_view t);
@@ -156,9 +161,17 @@ class Context {
   // scroll under it. For numeric fields that should react to the wheel like sliders do.
   int WheelSteps(D2D1_RECT_F r);
   bool Swatch(Id id, D2D1_RECT_F r, D2D1_COLOR_F c, bool selected);
-  // `glyph` draws a leading icon; `padRight` keeps room for a control drawn over the right end.
+  // Compact numeric field: label in the first `labelW` DIPs of `row`, the field after it. The field's
+  // tonal fill shows the value within [min, max] (from the middle when `centered`). Dragging
+  // horizontally changes the value relative to where the press started, a click without movement
+  // opens inline entry (Enter applies, Esc cancels), and the wheel anywhere over the row steps it.
+  bool ValueField(Id id, D2D1_RECT_F row, std::wstring_view label, float* value, float min, float max, float step,
+                  int decimals, std::wstring_view unit = {}, bool centered = false, float labelW = 0,
+                  std::wstring_view note = {});
+  // `glyph` draws a leading icon; `padRight` / `padLeft` keep room for controls drawn over the ends.
   bool TextField(Id id, D2D1_RECT_F r, std::wstring* text, std::wstring_view placeholder, size_t maxLen = 64,
-                 bool* submitted = nullptr, bool mono = false, wchar_t glyph = 0, float padRight = 0);
+                 bool* submitted = nullptr, bool mono = false, wchar_t glyph = 0, float padRight = 0,
+                 float padLeft = 0);
   bool Segmented(Id id, D2D1_RECT_F r, const std::vector<std::wstring>& items, int* selected);
   bool Link(Id id, float x, float y, std::wstring_view label, wchar_t glyph, float* width = nullptr);
 
@@ -175,6 +188,11 @@ class Context {
   bool Modal() const { return modal_; }
   void BeginOverlay() { overlay_ = true; }
   void EndOverlay() { overlay_ = false; }
+
+  // Custom window chrome: rectangles hit-tested for interaction that start above `height` are
+  // collected each frame, so the caption strip can tell controls from draggable background.
+  void SetCaptionHeight(float height) { captionH_ = height; }
+  bool OverControl(D2D1_POINT_2F p) const;
 
   bool IsFocused(Id id) const { return focus_ == id; }
   bool AnyFocus() const { return focus_ != 0; }
@@ -201,6 +219,8 @@ class Context {
   D2D1_SIZE_F size_{};
   float scale_ = 1;
   ComPtr<ID2D1SolidColorBrush> solid_;
+  ComPtr<ID2D1StrokeStyle> roundStroke_;
+  std::vector<std::pair<const char*, ComPtr<ID2D1PathGeometry>>> paths_;
   ComPtr<IDWriteTextFormat> formats_[static_cast<int>(Font::Count)];
   std::vector<D2D1_RECT_F> clips_;
   bool InWheelZone(D2D1_POINT_2F p) const;
@@ -216,6 +236,14 @@ class Context {
   std::wstring valueText_;
   // Slider rails that take the wheel: collected this frame, consulted by BeginScroll next frame.
   std::vector<D2D1_RECT_F> wheelZones_, prevWheelZones_;
+  void AddWheelZone(D2D1_RECT_F r);
+  // Value field drag: pointer x and value at the press, and whether the pointer has moved since.
+  float dragX_ = 0, dragV_ = 0;
+  bool dragMoved_ = false;
+  // Interactive rectangles inside the caption strip (this frame / last complete frame).
+  float captionH_ = 0;
+  mutable std::vector<D2D1_RECT_F> controls_;
+  std::vector<D2D1_RECT_F> prevControls_;
 };
 
 }  // namespace sl::ui

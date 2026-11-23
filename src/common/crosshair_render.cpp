@@ -101,6 +101,58 @@ class Canvas {
 
   void Clear() { std::fill(buf_.begin(), buf_.end(), Rgba{}); }
 
+  // Separable Gaussian blur of the premultiplied buffer, limited to the painted area plus the
+  // kernel reach. sigma = radius / 2, kernel truncated at 3 sigma; pixels outside are transparent.
+  void Blur(float radius) {
+    if (radius < 0.05f) return;
+    int x0 = w_, y0 = h_, x1 = -1, y1 = -1;
+    for (int y = 0; y < h_; ++y) {
+      for (int x = 0; x < w_; ++x) {
+        if (buf_[static_cast<size_t>(y) * w_ + x].a <= 0) continue;
+        x0 = std::min(x0, x);
+        x1 = std::max(x1, x);
+        y0 = std::min(y0, y);
+        y1 = std::max(y1, y);
+      }
+    }
+    if (x1 < 0) return;
+    const float sigma = radius * 0.5f;
+    const int half = std::max(1, static_cast<int>(std::ceil(sigma * 3.f)));
+    std::vector<float> k(static_cast<size_t>(2 * half + 1));
+    float sum = 0;
+    for (int i = -half; i <= half; ++i) {
+      const float v = std::exp(-static_cast<float>(i * i) / (2 * sigma * sigma));
+      k[static_cast<size_t>(i + half)] = v;
+      sum += v;
+    }
+    for (float& v : k) v /= sum;
+    x0 = std::max(0, x0 - half);
+    y0 = std::max(0, y0 - half);
+    x1 = std::min(w_ - 1, x1 + half);
+    y1 = std::min(h_ - 1, y1 + half);
+    std::vector<Rgba> tmp(buf_.size());
+    const auto pass = [&](const std::vector<Rgba>& src, std::vector<Rgba>& dst, int dx, int dy) {
+      for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+          Rgba acc;
+          for (int i = -half; i <= half; ++i) {
+            const int sx = x + i * dx, sy = y + i * dy;
+            if (sx < 0 || sy < 0 || sx >= w_ || sy >= h_) continue;
+            const Rgba& p = src[static_cast<size_t>(sy) * w_ + sx];
+            const float f = k[static_cast<size_t>(i + half)];
+            acc.r += p.r * f;
+            acc.g += p.g * f;
+            acc.b += p.b * f;
+            acc.a += p.a * f;
+          }
+          dst[static_cast<size_t>(y) * w_ + x] = acc;
+        }
+      }
+    };
+    pass(buf_, tmp, 1, 0);
+    pass(tmp, buf_, 0, 1);
+  }
+
   Image ToImage(float opacity) const {
     Image img;
     img.width = w_;
@@ -217,8 +269,10 @@ class LayerPainter {
  public:
   // `even`: the crosshair is centred on the pixel corner (cx, cy) instead of the pixel centre.
   // Every layer must share the same centre or mixed elements end up half a pixel apart.
-  LayerPainter(Canvas& cv, const Layer& L, float scale, int cx, int cy, bool even)
-      : cv_(cv), L_(L), s_(scale), even_(even) {
+  enum class Part { All, Outline, Fill };
+
+  LayerPainter(Canvas& cv, const Layer& L, float scale, int cx, int cy, bool even, Part part = Part::All)
+      : cv_(cv), L_(L), s_(scale), even_(even), part_(part) {
     cx_ = cx + Round(L.offsetX);
     cy_ = cy + Round(L.offsetY);
     pivot_ = even ? Pt{static_cast<float>(cx_), static_cast<float>(cy_)} : Pt{cx_ + 0.5f, cy_ + 0.5f};
@@ -249,8 +303,12 @@ class LayerPainter {
  private:
   bool HasOutline() const { return o_ > 0 && line_.a > 0; }
 
+  // Every shape paints its outline pass with `line_` and its fill pass with `fill_` by reference,
+  // so the part being painted is selected by the colour's identity.
   template <class Fn>
   void Solid(Box bounds, float rotation, Fn inside, const Rgba& c) {
+    if (part_ == Part::Outline && &c == &fill_) return;
+    if (part_ == Part::Fill && &c == &line_) return;
     cv_.Fill(bounds, rotation, pivot_, inside, [&](float, float) { return c; });
   }
 
@@ -274,10 +332,10 @@ class LayerPainter {
   void CrossShape(int rayMask, float rotation, bool fillCenterAtZeroGap) {
     const int t = Match(std::max(1, Round(L_.thickness * s_)));
     const int g = std::max(0, Round(L_.gap * s_));
-    const int len = std::max(0, Round(L_.length * s_));
+    // Rays never shrink below 1 px, so a scaled-down crosshair cannot vanish.
+    const int len = std::max(1, Round(L_.length * s_));
     // Vertical rays may have their own length (Valorant-style "separate vertical length").
-    const int lenV = L_.lengthV > 0 ? std::max(0, Round(L_.lengthV * s_)) : len;
-    if (len <= 0 && lenV <= 0) return;
+    const int lenV = L_.lengthV > 0 ? std::max(1, Round(L_.lengthV * s_)) : len;
     const bool aligned = AxisAligned(rotation);
     const int rays = aligned ? RotateRays(rayMask, Round(rotation / 90.f)) : rayMask;
     const int lo = cx_ - t / 2, hi = lo + t;
@@ -436,6 +494,7 @@ class LayerPainter {
   const Layer& L_;
   float s_;
   bool even_ = false;
+  Part part_ = Part::All;
   int cx_ = 0, cy_ = 0;
   Pt pivot_{};
   int o_ = 0;
@@ -474,6 +533,7 @@ int CrosshairExtent(const Crosshair& c) {
     const bool polygon = L.shape == Shape::Diamond || L.shape == Shape::Triangle;
     if (L.outline) e += L.outlineThickness * (polygon ? 2.f : 1.f);
     if (rotated || L.shape == Shape::Corners || L.shape == Shape::Box) e *= 1.4143f;
+    e += 1.5f * std::max(L.blur, L.outlineBlur) * s + 1;  // Gaussian reach: 3 sigma, sigma = blur / 2
     e += std::sqrt(L.offsetX * L.offsetX + L.offsetY * L.offsetY);
     m = std::max(m, e);
   }
@@ -506,10 +566,23 @@ Image RasterizeCrosshair(const Crosshair& c) {
   const bool even = CrosshairEvenCenter(c);
   Canvas out(size, size);
   Canvas layer(size, size);
+  std::vector<Canvas> fill;  // second buffer, allocated only for blurred layers
   for (const Layer& L : c.layers) {
     if (L.hidden) continue;
     layer.Clear();
-    LayerPainter(layer, L, c.scale, size / 2, size / 2, even).Paint();
+    if (L.blur > 0 || L.outlineBlur > 0) {
+      // Outline and fill are blurred separately, then the fill is laid over the outline.
+      using Part = LayerPainter::Part;
+      if (fill.empty()) fill.emplace_back(size, size);
+      fill[0].Clear();
+      LayerPainter(layer, L, c.scale, size / 2, size / 2, even, Part::Outline).Paint();
+      layer.Blur(L.outlineBlur * c.scale);
+      LayerPainter(fill[0], L, c.scale, size / 2, size / 2, even, Part::Fill).Paint();
+      fill[0].Blur(L.blur * c.scale);
+      layer.CompositeOver(fill[0], 1.f);
+    } else {
+      LayerPainter(layer, L, c.scale, size / 2, size / 2, even).Paint();
+    }
     out.CompositeOver(layer, std::clamp(L.opacity, 0.f, 1.f));
   }
   return out.ToImage(std::clamp(c.opacity, 0.f, 1.f));

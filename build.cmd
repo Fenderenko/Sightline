@@ -50,6 +50,20 @@ cl %CFLAGS% /c src\core\*.cpp /Fo"%OBJ%\core\\" /Fd"%OBJ%\core\vc.pdb" || exit /
 echo [build] link sightline.exe
 rem The core imports no graphics stack at all; /OPT:REF drops the unused Direct2D logo code from shared objs.
 link %LFLAGS% /OUT:"%BIN%\sightline.exe" "%OBJ%\core\*.obj" "%OBJ%\common\*.obj" "%OBJ%\app.res" %LIBS% || exit /b 1
+
+rem SL_TEST=1: build and run the self-test (rendering symmetry, config round trip, share codes).
+rem It needs only the common objects, so it also runs with SL_TARGET=core.
+if "%SL_TEST%"=="1" (
+  echo [build] self-test
+  if not exist "%OBJ%\test" mkdir "%OBJ%\test"
+  cl %CFLAGS% tests\selftest.cpp "%OBJ%\common\*.obj" /Fo"%OBJ%\test\\" /Fd"%OBJ%\test\vc.pdb" /Fe"%OBJ%\test\selftest.exe" /link /SUBSYSTEM:CONSOLE %LIBS% >nul || exit /b 1
+  "%OBJ%\test\selftest.exe" "%OBJ%\test\presets.bmp" > "%OBJ%\test\selftest.txt" || exit /b 1
+  type "%OBJ%\test\selftest.txt"
+  findstr /c:"crooked presets: 0" "%OBJ%\test\selftest.txt" >nul || exit /b 1
+  findstr /c:"parsed=1 meta=1 edited=1 sharecode=1" "%OBJ%\test\selftest.txt" >nul || exit /b 1
+  findstr /c:"i18n gaps: 0" "%OBJ%\test\selftest.txt" >nul || exit /b 1
+)
+
 if /i "%SL_TARGET%"=="core" (
   echo [build] done: %BIN%\sightline.exe
   exit /b 0
@@ -59,17 +73,6 @@ echo [build] settings
 cl %CFLAGS% /c src\settings\*.cpp /Fo"%OBJ%\settings\\" /Fd"%OBJ%\settings\vc.pdb" || exit /b 1
 echo [build] link sightline-settings.exe
 link %LFLAGS% /OUT:"%BIN%\sightline-settings.exe" "%OBJ%\settings\*.obj" "%OBJ%\common\*.obj" "%OBJ%\app.res" %LIBS% || exit /b 1
-
-rem SL_TEST=1: build and run the self-test (rendering symmetry, config round trip, share codes).
-if "%SL_TEST%"=="1" (
-  echo [build] self-test
-  if not exist "%OBJ%\test" mkdir "%OBJ%\test"
-  cl %CFLAGS% tests\selftest.cpp "%OBJ%\common\*.obj" /Fo"%OBJ%\test\\" /Fd"%OBJ%\test\vc.pdb" /Fe"%OBJ%\test\selftest.exe" /link /SUBSYSTEM:CONSOLE %LIBS% >nul || exit /b 1
-  "%OBJ%\test\selftest.exe" "%OBJ%\test\presets.bmp" > "%OBJ%\test\selftest.txt" || exit /b 1
-  type "%OBJ%\test\selftest.txt"
-  findstr /c:"crooked presets: 0" "%OBJ%\test\selftest.txt" >nul || exit /b 1
-  findstr /c:"parsed=1 meta=1 edited=1 sharecode=1" "%OBJ%\test\selftest.txt" >nul || exit /b 1
-)
 
 echo [build] done: %BIN%\sightline.exe, %BIN%\sightline-settings.exe
 exit /b 0

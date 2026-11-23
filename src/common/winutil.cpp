@@ -227,3 +227,18 @@ void Log(const wchar_t* component, const wchar_t* fmt, ...) {
 }
 
 }  // namespace sl
+
+namespace sl {
+
+void RemoveUpdateLeftovers() {
+  const std::wstring dir = ExeDir();
+  WIN32_FIND_DATAW fd;
+  const HANDLE h = FindFirstFileW((dir + L"\\*.exe.old").c_str(), &fd);
+  if (h == INVALID_HANDLE_VALUE) return;
+  do {
+    DeleteFileW((dir + L"\\" + fd.cFileName).c_str());
+  } while (FindNextFileW(h, &fd));
+  FindClose(h);
+}
+
+}  // namespace sl

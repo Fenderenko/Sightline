@@ -69,9 +69,12 @@ struct Layer {
   float outlineThickness = 1;
   Color outlineColor{0, 0, 0, 1};
   float outlineOpacity = 1;
+  float blur = 0;         // Gaussian softening of the fill, px (0..kMaxBlur).
+  float outlineBlur = 0;  // Gaussian softening of the outline only (soft shadow / glow), px.
   float offsetX = 0, offsetY = 0;
   bool hidden = false;
 };
+inline constexpr float kMaxBlur = 8;
 
 struct Crosshair {
   std::string id;
@@ -99,8 +102,8 @@ struct GameProfile {
 };
 
 struct Settings {
-  std::string language = "uk";
-  std::string theme = "system";  // system | light | dark (settings window only)
+  std::string language = "en";   // interface language code, see Languages()
+  std::string theme = "dark";    // system | light | dark (settings window only)
   int monitor = -1;              // -1: monitor of the game window; 0: primary; n >= 1: ListMonitors()[n - 1]
   UINT nudgeMods = 0;            // modifiers + arrow keys move the crosshair by 1 px; 0 = off
   bool hideWhenCursor = false;   // hide while the mouse cursor is visible (game menus, inventory)

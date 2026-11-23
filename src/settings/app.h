@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/model.h"
+#include "settings/update.h"
 #include "settings/ui.h"
 
 #include <d2d1_1.h>
@@ -20,7 +21,22 @@ enum class Capture : int { None, Toggle, Next, Prev, Settings, Ads, Crosshair };
 enum class PickTarget : int { None, Filter, Safe, Profile };
 enum class FileAction : int { None, Export, Import };
 // Popovers are drawn last, above the page; while one is open the page underneath is inert.
-enum class Popup : int { None, CardMenu, Color, Picker, Unsaved };
+enum class Popup : int { None, CardMenu, Color, Picker, Unsaved, Running, Language };
+// About → updates: what the last check or download found.
+enum class UpdState : int { Idle, Checking, UpToDate, Available, CheckFailed, Downloading, Failed };
+// Update worker в†’ window. wParam: 0 check failed, 1 checked (lParam: update::Release*),
+// 2 download failed, 3 downloaded (lParam: std::wstring* folder). The window frees lParam.
+inline constexpr UINT kMsgUpdate = WM_APP + 40;
+
+// One running application offered by the "From running" list (deduplicated by exe name).
+struct RunningApp {
+  std::wstring exe;    // lowercase file name
+  std::wstring path;   // full image path; empty when the process cannot be queried
+  std::wstring name;   // file description, else the window title, else the exe name
+  bool windowed = false;  // owns a visible top-level window
+  bool iconTried = false;
+  ComPtr<ID2D1Bitmap1> icon;
+};
 // Why the unsaved-changes dialog is open. Action: a deferred UI action (switching crosshair, creating
 // one) runs after Save / Don't save. Switched: the active crosshair already changed (hotkey, tray);
 // Cancel switches back. Close: the window closes after Save / Don't save.
@@ -45,6 +61,7 @@ class SettingsApp {
     std::string fingerprint;
     ComPtr<ID2D1Bitmap1> bitmap;
     int size = 0;
+    bool even = false;  // centre on a pixel corner (CrosshairEvenCenter) instead of a pixel centre
   };
   void UpdatePreviews();
   bool RasterizeInto(Preview& p, const Crosshair& c);
@@ -54,8 +71,12 @@ class SettingsApp {
   // Backdrop -1: none, 0: preview tile, 1: dark, 2: light. Returns the integer zoom used (0 when nothing drawn).
   int DrawPreview(const Crosshair& c, D2D1_RECT_F box, float maxZoom, int backdrop, bool grid = false,
                   float radius = ui::kRadiusCtl);
+  // `rulers`: centre axes and pixel-offset rulers along the box edges (editor canvas).
   int DrawBitmap(const Preview* p, D2D1_RECT_F box, float maxZoom, int backdrop, bool grid, float fit = 0.86f,
-                 float radius = ui::kRadiusCtl);
+                 float radius = ui::kRadiusCtl, bool rulers = false);
+  void DrawRulers(const Preview* p, D2D1_RECT_F box, D2D1_RECT_F dst, float zoom, int backdrop, float radius);
+  // Icon of an executable as a bitmap of `sizeDip` DIPs; null when the file has none.
+  ComPtr<ID2D1Bitmap1> ExeIcon(const std::wstring& path, float sizeDip);
 
   // State sync
   void PushConfig();
@@ -67,7 +88,11 @@ class SettingsApp {
   void ApplyAutostart(bool on);
   bool CoreOnline() const;
   void LaunchCore();
-  std::vector<std::wstring> RunningApps() const;
+  // Windowed apps first, then background processes; system noise is left out.
+  std::vector<RunningApp> RunningApps() const;
+  // Adds a lowercase exe name to the list behind `target`; false when it is already there.
+  bool AddExeTo(PickTarget target, const std::wstring& exe);
+  bool HasExe(PickTarget target, const std::wstring& exe) const;
   void RunFileAction(FileAction a);
   void ImportCode();
 
@@ -126,18 +151,35 @@ class SettingsApp {
   float LayerProps(Layer& L, float x0, float x1, float y, bool& changed, bool hasDot, int* dotRequest, bool evenCenter,
                    float scale);
   // Colour chip that opens the colour popover for the selected layer (0: fill, 1: outline).
-  void ColorChip(D2D1_RECT_F r, const Color& c, int which);
+  // `anchor` is the field the popover lines up with.
+  void ColorChip(D2D1_RECT_F r, const Color& c, int which, D2D1_RECT_F anchor);
+  void RunningPopover();
+  // Custom caption: minimise / maximise / close drawn in the top-right corner.
+  void CaptionButtons();
+  D2D1_RECT_F CaptionButtonRect(int index) const;  // 0 minimise, 1 maximise, 2 close (DIPs)
+  // WM_NCHITTEST for a client point in DIPs: HTCAPTION, a caption button code or HTCLIENT.
+  LRESULT CaptionHit(float x, float y) const;
+  // A text field has the keyboard (the layers list focus does not count).
+  bool TypingFocus() const;
   // Settings-style row inside a card: title and optional hint left; returns the control column's left edge.
   float RowText(D2D1_RECT_F row, const wchar_t* title, const wchar_t* hint, float controlW);
   void PageHotkeys(D2D1_RECT_F area);
   void PageProfiles(D2D1_RECT_F area);
   float ExeList(const char* key, std::vector<std::wstring>& list, float x0, float x1, float y, PickTarget target,
                 std::wstring& draft);
+  // "Browse…" / "From running" buttons and a secondary name field; returns the y below the row.
+  float ExeAddRow(const char* key, PickTarget target, std::wstring& draft, float x0, float x1, float y);
   // Field showing the chosen crosshair; opens a searchable list popover anchored to it. `id` must stay
   // valid until the end of the frame: the popover writes the choice into it.
   void CrosshairPicker(const std::string& key, D2D1_RECT_F field, std::string& id);
   void PageSafety(D2D1_RECT_F area);
   void PageSettings(D2D1_RECT_F area);
+  // Settings → About: version, update check / install, GitHub and author links. Returns the y below it.
+  float AboutSection(float x0, float x1, float y);
+  void LanguagePopover();
+  void StartUpdateCheck();
+  void StartUpdateDownload();
+  void OnUpdateResult(WPARAM kind, LPARAM payload);
 
   HINSTANCE hinst_ = nullptr;
   HWND hwnd_ = nullptr;
@@ -181,8 +223,11 @@ class SettingsApp {
   std::wstring editHex_, editOutlineHex_;
   std::wstring importCode_;
   std::wstring draftFilter_, draftSafe_, draftProfile_;
-  PickTarget pickTarget_ = PickTarget::None;
-  std::vector<std::wstring> running_;
+  PickTarget runTarget_ = PickTarget::None;     // list the running-apps popover adds to
+  PickTarget pendingBrowse_ = PickTarget::None; // exe file dialog to run after the frame
+  std::vector<RunningApp> running_;
+  std::wstring runSearch_;
+  float runScroll_ = 0;
   std::string pickerOpen_;  // key of the open crosshair picker
   std::string pendingDelete_;
   FileAction pendingFile_ = FileAction::None;
@@ -212,11 +257,23 @@ class SettingsApp {
   bool historyPending_ = false;
   ULONGLONG lastWheel_ = 0;
   bool dupLayerRequest_ = false;
+  int clipRequest_ = 0;  // keyboard request for the editor: 1 copy layer, 2 paste layer, 3 paste style
+  Layer layerClip_;      // copied layer, kept across crosshairs
+  bool hasLayerClip_ = false;
+
+  // Custom caption buttons: hit-test code under the pointer and the one pressed (0 = none).
+  LRESULT capHover_ = 0, capPressed_ = 0;
+  float headerRight_ = 0;  // left edge of the header's right-hand controls this frame (DIPs)
 
   Capture capture_ = Capture::None;
   std::string captureCrosshair_;
   std::wstring toast_;
   ULONGLONG toastUntil_ = 0;
+
+  // Updates (Settings → About). Worker threads post kMsgUpdate with a heap result.
+  UpdState updState_ = UpdState::Idle;
+  update::Release updRelease_;
+  std::string appVersion_;
 };
 
 }  // namespace sl

@@ -52,6 +52,9 @@ struct MonitorDesc {
 // Monitors in a stable order: primary first, then left-to-right, top-to-bottom.
 std::vector<MonitorDesc> ListMonitors();
 
+// Deletes *.exe.old next to the executable, left behind by an update (best effort).
+void RemoveUpdateLeftovers();
+
 // Appends a line to <LogDir>\<component>.log; rotates at 1 MB.
 void Log(const wchar_t* component, const wchar_t* fmt, ...);
 

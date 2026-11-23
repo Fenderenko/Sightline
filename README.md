@@ -19,16 +19,20 @@ The crosshair appears immediately; the tray icon opens the settings.
 - **Editor:**
   - 13 shapes: cross, plus, X, T, dot, ring, box, diamond, triangle, corners, chevron, segments, line.
   - Layers, outline, rotation, offset, separate vertical length, "centre dot".
-  - Colour picker, precise value entry, mouse wheel over any value.
+  - Fill and outline blur (soft crosshair, soft shadow / glow).
+  - Colour picker with hex entry, compact value fields (drag, type or mouse wheel).
+  - Canvas rulers with pixel offsets from the centre; copy / paste layers and layer styles.
   - Undo / redo (Ctrl+Z / Ctrl+Y).
   - Explicit saving: "Save" / "Save as new" / "Discard changes". Built-in presets are never modified: saving creates your own copy under "Mine".
 - **Pixel-exact.** All elements share one centre, so the crosshair is always symmetric.
 - **Code import:** Sightline `SL1.…`, Valorant (`0;P;…`) and CS2 (`CSGO-…` and `CS…`, rescaled to your monitor). Library export and import as JSON.
-- **Game profiles** by exe (own crosshair and offset), process filter, Competitive-safe list.
+- **Game profiles** by exe (own crosshair and offset), process filter, Competitive-safe list. Games are picked by browsing to the exe or from a list of running apps.
 - **Aim down sights (ADS):** hide the crosshair, show it only while aiming, or switch to another one.
 - **When to hide the crosshair:** on the desktop, while the mouse cursor is visible (menus, inventory), or outside fullscreen games.
 - **Other:** monitor selection, monitor or game-window centre, sleep until requested, exclusion from streams and recordings.
-- **Look:** light and dark themes (or follow the system), English and Ukrainian.
+- **Look:** dark theme by default, light or follow the system.
+- **Languages:** English (default), Ukrainian, German, French, Spanish, Portuguese (Brazil), Polish, Italian, Turkish.
+- **Updates:** Settings → About checks GitHub on request and installs the new release in place. Nothing is checked on its own.
 
 ## Default hotkeys
 
@@ -55,6 +59,7 @@ The settings window is a separate process that exits completely when closed.
 ## Safety and anti-cheat
 
 Sightline does not inject DLLs, hook DirectX/OpenGL/Vulkan, read or modify game memory or files, analyse screen pixels, send input or install drivers.
+It goes online only when you press "Check for updates" (api.github.com and the release download).
 Still, no third-party overlay has an official guarantee from game developers, and some tournament platforms forbid third-party crosshairs. Check the game's rules; for such games there is the Competitive-safe list.
 
 ## Building from source
