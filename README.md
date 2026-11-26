@@ -12,6 +12,8 @@ The crosshair appears immediately; the tray icon opens the settings.
 
 > The executables are not code-signed, so Windows SmartScreen may show a warning:
 > "More info" → "Run anyway".
+> To avoid it, right-click the downloaded zip → Properties → tick "Unblock" → OK, then unzip.
+> Updates installed from Settings → About never show this warning.
 
 ## Features
 

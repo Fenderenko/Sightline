@@ -2294,10 +2294,13 @@ void SettingsApp::PageProfiles(D2D1_RECT_F full) {
     PushConfig();
   }
   y += 34 + 10;
-  ui_.Text(s.filterMode == FilterMode::Whitelist   ? T("prof.fmWhiteHint")
+  // "Only my games" covers the profiles above plus the extra list; with neither the crosshair never shows.
+  const bool noGames = s.filterMode == FilterMode::Whitelist && s.profiles.empty() && s.filterList.empty();
+  ui_.Text(noGames                                 ? T("prof.fmWhiteEmpty")
+           : s.filterMode == FilterMode::Whitelist ? T("prof.fmWhiteHint")
            : s.filterMode == FilterMode::Blacklist ? T("prof.fmBlackHint")
                                                    : T("prof.fmAllHint"),
-           Rc(x0, y, x1, y + 18), Font::Small, t.ink3);
+           Rc(x0, y, x1, y + 18), Font::Small, noGames ? t.acc : t.ink3);
   y += 18 + 16;
   if (s.filterMode != FilterMode::All) y = ExeList("prof.flist", s.filterList, x0, x1, y, PickTarget::Filter, draftFilter_);
   y += 16;

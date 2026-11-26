@@ -74,6 +74,7 @@ class CoreApp {
   void UpdateVisibility();
   void UpdatePolling();
   void PollKeys();
+  bool IsMyGame(const std::wstring& exe) const;
   bool FilterAllows(const std::wstring& exe) const;
   int ProfileIndex() const;
   std::string EffectiveId() const;
@@ -401,8 +402,7 @@ void CoreApp::OnForeground(HWND fg) {
       adsActive_ = false;
       adsPrevDown_ = false;
     }
-    if (sleeping_ && (ProfileIndex() >= 0 ||
-                      (cfg_.settings.filterMode == FilterMode::Whitelist && Contains(cfg_.settings.filterList, gameExe_)))) {
+    if (sleeping_ && (ProfileIndex() >= 0 || (cfg_.settings.filterMode == FilterMode::Whitelist && IsMyGame(gameExe_)))) {
       sleeping_ = false;
     }
     ApplyCrosshair();
@@ -477,11 +477,21 @@ void CoreApp::UpdateCenter() {
   overlay_.SetCenter(c);
 }
 
+// "Only my games": the games of the profiles plus the extra filter list.
+bool CoreApp::IsMyGame(const std::wstring& exe) const {
+  const Settings& s = cfg_.settings;
+  if (Contains(s.filterList, exe)) return true;
+  for (const GameProfile& p : s.profiles) {
+    if (p.exe == exe) return true;
+  }
+  return false;
+}
+
 bool CoreApp::FilterAllows(const std::wstring& exe) const {
   const Settings& s = cfg_.settings;
   if (Contains(s.safeList, exe)) return false;
   switch (s.filterMode) {
-    case FilterMode::Whitelist: return Contains(s.filterList, exe);
+    case FilterMode::Whitelist: return IsMyGame(exe);
     case FilterMode::Blacklist: return !Contains(s.filterList, exe);
     default: return true;
   }
